@@ -20,12 +20,16 @@ set (GRAPHS_SRCS
   controls.cpp
   parsers.cpp
   p4c-graphs.cpp
+  pathEncoding.cpp
+  injectEncoding.cpp
   )
 
 set (GRAPHS_HDRS
   graphs.h
   controls.h
   parsers.h
+  pathEncoding.h
+  injectEncoding.h
   )
 
 add_cpplint_files(${CMAKE_CURRENT_SOURCE_DIR} "${GRAPHS_SRCS};${GRAPHS_HDRS}")

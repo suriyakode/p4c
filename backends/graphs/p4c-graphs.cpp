@@ -14,7 +14,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#include "backends/graphs/version.h"
 #include "ir/ir.h"
 #include "lib/log.h"
 #include "lib/error.h"
@@ -26,10 +25,13 @@ limitations under the License.
 #include "frontends/common/parseInput.h"
 #include "frontends/p4/evaluator/evaluator.h"
 #include "frontends/p4/frontend.h"
+#include "frontends/p4/toP4/toP4.h"
 
 #include "graphs.h"
 #include "controls.h"
 #include "parsers.h"
+#include "pathEncoding.h"
+#include "injectEncoding.h"
 
 namespace graphs {
 
@@ -55,8 +57,16 @@ MidEnd::MidEnd(CompilerOptions& options) {
     addPasses({
         evaluator,
         new VisitFunctor([this, evaluator]() { toplevel = evaluator->getToplevelBlock(); }),
+        new P4::ResolveReferences(&refMap)
     });
 }
+
+class BallLarus : public PassManager {
+ public:
+    BallLarus(graphs::PathEncoding *pencoding, graphs::InjectEncoding* inject, P4::ToP4* top4) {
+        addPasses({pencoding, inject, top4});
+    }
+};
 
 class Options : public CompilerOptions {
  public:
@@ -80,7 +90,7 @@ int main(int argc, char *const argv[]) {
     AutoCompileContext autoGraphsContext(new ::graphs::GraphsContext);
     auto& options = ::graphs::GraphsContext::get().options();
     options.langVersion = CompilerOptions::FrontendVersion::P4_16;
-    options.compilerVersion = P4C_GRAPHS_VERSION_STRING;
+    options.compilerVersion = "0.0.5";
 
     if (options.process(argc, argv) != nullptr)
         options.setInputFile();
@@ -111,7 +121,7 @@ int main(int argc, char *const argv[]) {
     midEnd.addDebugHook(hook);
     const IR::ToplevelBlock *top = nullptr;
     try {
-        top = midEnd.process(program);
+        top = midEnd.process(program); 
         if (options.dumpJsonFile)
             JSONGenerator(*openFile(options.dumpJsonFile, true)) << program << std::endl;
     } catch (const Util::P4CExceptionBase &bug) {
@@ -123,8 +133,15 @@ int main(int argc, char *const argv[]) {
 
     LOG2("Generating graphs under " << options.graphsDir);
     LOG2("Generating control graphs");
-    graphs::ControlGraphs cgen(&midEnd.refMap, &midEnd.typeMap, options.graphsDir);
-    top->getMain()->apply(cgen);
+
+    auto top4 = new P4::ToP4(openFile("prime.p4", true), false, nullptr);
+    auto cgen = new graphs::ControlGraphs(&midEnd.refMap, &midEnd.typeMap, options.graphsDir);
+    auto pencoding = new graphs::PathEncoding(&midEnd.refMap, &midEnd.typeMap);
+    auto inject = new graphs::InjectEncoding(&midEnd.refMap, &midEnd.typeMap);
+    auto BL = graphs::BallLarus(pencoding, inject, top4);
+
+    top->getProgram()->apply(BL);
+
     LOG2("Generating parser graphs");
     graphs::ParserGraphs pgg(&midEnd.refMap, &midEnd.typeMap, options.graphsDir);
     program->apply(pgg);

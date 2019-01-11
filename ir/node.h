@@ -86,11 +86,12 @@ class Node : public virtual INode {
     Util::SourceInfo    srcInfo;
     int id;  // unique id for each node
     int clone_id;  // unique id this node was cloned from (recursively)
+    int numPaths = 1;
     void traceCreation() const;
     Node() : id(currentId++), clone_id(id) { traceCreation(); }
     explicit Node(Util::SourceInfo si) : srcInfo(si), id(currentId++), clone_id(id) {
         traceCreation(); }
-    Node(const Node& other) : srcInfo(other.srcInfo), id(currentId++), clone_id(other.clone_id) {
+    Node(const Node& other) : srcInfo(other.srcInfo), id(currentId++), clone_id(other.clone_id), numPaths(other.numPaths) {
         traceCreation(); }
     virtual ~Node() {}
     const Node *apply(Visitor &v) const;
@@ -114,7 +115,7 @@ class Node : public virtual INode {
     Util::JsonObject* sourceInfoJsonObj() const;
     /* operator== does a 'shallow' comparison, comparing two Node subclass objects for equality,
      * and comparing pointers in the Node directly for equality */
-    virtual bool operator==(const Node &a) const { return typeid(*this) == typeid(a); }
+    virtual bool operator==(const Node &a) const { return typeid(*this) == typeid(a) && this->numPaths == a->numPaths; }
     /* 'equiv' does a deep-equals comparison, comparing all non-pointer fields and recursing
      * though all Node subclass pointers to compare them with 'equiv' as well. */
     virtual bool equiv(const Node &a) const { return typeid(*this) == typeid(a); }
