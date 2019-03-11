@@ -40,7 +40,7 @@ const ordered_map<cstring, IrMethod::info_t> IrMethod::Generate = {
         bool first = true;
         if (auto parent = cl->getParent()) {
             if (parent->name == "Node")
-                buf << "typeid(*this) == typeid(a)";
+                buf << "typeid(*this) == typeid(a) && this->numPaths == a.numPaths";
             else
                 buf << parent->name << "::operator==(static_cast<const "
                     << parent->name << " &>(a))";

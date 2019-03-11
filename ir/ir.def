@@ -126,6 +126,8 @@ class P4Control : Type_Declaration, ISimpleNamespace, IApply, IContainer {
     IDeclaration getDeclByName(cstring name) const override {
         return controlLocals.getDeclaration(name); }
     ParameterList getConstructorParameters() const override { return constructorParams; }
+    void get_children(std::vector<const Node *> &v) { v.push_back(body); }
+
 #apply
     validate {
         if (!(name == type->name))
@@ -439,6 +441,10 @@ class IfStatement : Statement {
         clone.visit(ifFalse, "ifFalse");
         v.flow_merge(clone);
     }
+    void get_children(std::vector<const Node *> &v) {
+        v.push_back(ifTrue);
+        v.push_back(ifFalse);
+    } 
 }
 
 class BlockStatement : Statement, ISimpleNamespace, IAnnotated {
@@ -450,6 +456,11 @@ class BlockStatement : Statement, ISimpleNamespace, IAnnotated {
         return components.getDeclarations(); }
     void push_back(StatOrDecl st) { components.push_back(st); }
     Annotations getAnnotations() const override { return annotations; }
+    void get_children(std::vector<const Node *> &v) {
+        for (auto &component : components) {
+            v.push_back(component);
+        }
+    }
 }
 
 class MethodCallStatement : Statement {
@@ -484,7 +495,13 @@ class SwitchStatement : Statement {
     inline Vector<SwitchCase> cases;
     visit_children {
         v.visit(expression, "expression");
-        v.parallel_visit(cases, "cases"); }
+        v.parallel_visit(cases, "cases"); }    
+    void get_children(std::vector<const Node *> &v) {
+        v.push_back(expression);
+        for (auto &c : cases) {
+            v.push_back(c);
+        }
+    }
 }
 
 class Function : Declaration, IFunctional {

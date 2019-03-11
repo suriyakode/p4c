@@ -69,6 +69,8 @@ class Node : public virtual INode {
     virtual const Node *apply_visitor_postorder(Transform &v);
     virtual void apply_visitor_revisit(Transform &v, const Node *n) const;
 
+    virtual void get_children(std::vector<const Node *> &) { }
+
  protected:
     static int currentId;
     void traceVisit(const char* visitor) const;
@@ -92,6 +94,7 @@ class Node : public virtual INode {
         traceCreation(); }
     Node(const Node& other) : srcInfo(other.srcInfo), id(currentId++), clone_id(other.clone_id) {
         traceCreation(); }
+    int numPaths = 1;
     virtual ~Node() {}
     const Node *apply(Visitor &v) const;
     const Node *apply(Visitor &&v) const { return apply(v); }
@@ -114,10 +117,10 @@ class Node : public virtual INode {
     Util::JsonObject* sourceInfoJsonObj() const;
     /* operator== does a 'shallow' comparison, comparing two Node subclass objects for equality,
      * and comparing pointers in the Node directly for equality */
-    virtual bool operator==(const Node &a) const { return typeid(*this) == typeid(a); }
+    virtual bool operator==(const Node &a) const { return typeid(*this) == typeid(a) && this->numPaths == a.numPaths; }
     /* 'equiv' does a deep-equals comparison, comparing all non-pointer fields and recursing
      * though all Node subclass pointers to compare them with 'equiv' as well. */
-    virtual bool equiv(const Node &a) const { return typeid(*this) == typeid(a); }
+    virtual bool equiv(const Node &a) const { return typeid(*this) == typeid(a) && this->numPaths == a.numPaths; }
 #define DEFINE_OPEQ_FUNC(CLASS, BASE) \
     virtual bool operator==(const CLASS &) const { return false; }
     IRNODE_ALL_SUBCLASSES(DEFINE_OPEQ_FUNC)

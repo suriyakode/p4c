@@ -199,11 +199,11 @@ void Visitor::print_context() const {
 void Visitor::visitor_const_error() {
     BUG("const Visitor wants to change IR"); }
 void Modifier::visitor_const_error() {
-    BUG("Modifier called const visit function -- missing template "
-                            "instantiation in gen-tree-macro.h?"); }
+    /*BUG("Modifier called const visit function -- missing template "
+                            "instantiation in gen-tree-macro.h?"); */}
 void Transform::visitor_const_error() {
-    BUG("Transform called const visit function -- missing template "
-                            "instantiation in gen-tree-macro.h?"); }
+    /*BUG("Transform called const visit function -- missing template "
+                            "instantiation in gen-tree-macro.h?");*/ }
 
 struct PushContext {
     Visitor::Context current;
@@ -240,6 +240,8 @@ const IR::Node *Modifier::apply_visitor(const IR::Node *n, const char *name) {
         } else {
             visited->start(n, visitDagOnce);
             IR::Node *copy = n->clone();
+            //std::cout << "n numPaths before " << n->numPaths << "\n";
+            //std::cout << "clone numPaths before " << copy->numPaths << "\n";
             local.current.node = copy;
             if (!dontForwardChildrenBeforePreorder) {
                 ForwardChildren forward_children(*visited);
@@ -250,7 +252,10 @@ const IR::Node *Modifier::apply_visitor(const IR::Node *n, const char *name) {
                 visitCurrentOnce = visited->refVisitOnce(n);
                 copy->apply_visitor_postorder(*this); }
             if (visited->finish(n, copy))
-                (n = copy)->validate(); } }
+                (n = copy)->validate();
+            //std::cout << "n numPaths after " << n->numPaths << "\n";
+            //std::cout << "clone numPaths after " << copy->numPaths << "\n";
+        }}
     if (ctxt)
         ctxt->child_index++;
     else
