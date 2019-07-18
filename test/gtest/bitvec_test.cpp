@@ -93,4 +93,41 @@ TEST(Bitvec, getslice) {
     EXPECT_EQ(slice.ffs(80), 96);
 }
 
+TEST(Bitvec, rotate) {
+    bitvec bv;
+    bv.setrange(0, 4);
+    bv.setrange(12, 4);
+    bitvec bv_test1 = bv.rotate_right_copy(0, 8, 16);
+
+    bitvec bv_verify1(4, 8);
+    EXPECT_EQ(bv_test1, bv_verify1);
+
+    bitvec bv_test2 = bv.rotate_right_copy(0, 1, 16);
+    bitvec bv_verify2(0, 3);
+    bv_verify2.setrange(11, 5);
+    EXPECT_EQ(bv_test2, bv_verify2);
+
+    bitvec bv_test3 = bv.rotate_right_copy(0, 5, 13);
+
+    bitvec bv_verify3(7, 5);
+    bv_verify3.setrange(13, 3);
+    EXPECT_EQ(bv_test3, bv_verify3);
+
+    bv.rotate_right(0, 5, 13);
+    EXPECT_EQ(bv, bv_verify3);
+}
+
+TEST(Bitvec, rvalue) {
+    bitvec a(0x1ffff);
+    bitvec b(0xfff0000);
+
+    for (auto it = (a & b).begin(); it != (a & b).end(); ++it) {
+        EXPECT_EQ(it.index(), 16);
+        EXPECT_TRUE(it);
+    }
+    for (auto it = (a | b).begin(); it != (a | b).end(); ++it) {
+        EXPECT_TRUE(it);
+    }
+}
+
 }  // namespace Test

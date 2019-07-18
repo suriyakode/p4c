@@ -57,11 +57,11 @@ parser ParserImpl(packet_in packet, out headers_t hdr, inout meta_t meta, inout 
 }
 
 control ingress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_t standard_metadata) {
-    @name(".my_drop") action my_drop() {
-        mark_to_drop();
+    @name(".my_drop") action my_drop(inout standard_metadata_t smeta) {
+        mark_to_drop(smeta);
     }
-    @name(".my_drop") action my_drop_0() {
-        mark_to_drop();
+    @name(".my_drop") action my_drop_0(inout standard_metadata_t smeta_1) {
+        mark_to_drop(smeta_1);
     }
     bit<32> ipv4_address_0;
     bit<8> byte0_0;
@@ -76,10 +76,10 @@ control ingress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_
     }
     @name("ingress.do_resubmit") action do_resubmit(bit<32> new_ipv4_dstAddr) {
         hdr.ipv4.dstAddr = new_ipv4_dstAddr;
-        resubmit<standard_metadata_t>(standard_metadata);
+        resubmit<tuple<>>({  });
     }
     @name("ingress.do_clone_i2e") action do_clone_i2e(bit<32> l2ptr) {
-        clone3<standard_metadata_t>(CloneType.I2E, 32w5, standard_metadata);
+        clone3<tuple<>>(CloneType.I2E, 32w5, {  });
         meta.fwd.l2ptr = l2ptr;
     }
     @name("ingress.ipv4_da_lpm") table ipv4_da_lpm_0 {
@@ -91,9 +91,9 @@ control ingress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_
             set_mcast_grp();
             do_resubmit();
             do_clone_i2e();
-            my_drop();
+            my_drop(standard_metadata);
         }
-        default_action = my_drop();
+        default_action = my_drop(standard_metadata);
     }
     @name("ingress.set_bd_dmac_intf") action set_bd_dmac_intf(bit<24> bd, bit<48> dmac, bit<9> intf) {
         meta.fwd.out_bd = bd;
@@ -107,9 +107,9 @@ control ingress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_
         }
         actions = {
             set_bd_dmac_intf();
-            my_drop_0();
+            my_drop_0(standard_metadata);
         }
-        default_action = my_drop_0();
+        default_action = my_drop_0(standard_metadata);
     }
     apply {
         if (standard_metadata.instance_type == 32w6) {
@@ -120,29 +120,28 @@ control ingress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_
             ipv4_address_0 = byte0_0 ++ byte1_0 ++ byte2_0 ++ byte3_0;
             hdr.ipv4.srcAddr = ipv4_address_0;
             meta.fwd.l2ptr = 32w0xe50b;
+        } else if (standard_metadata.instance_type == 32w4) {
+            byte0_0 = 8w10;
+            byte1_0 = 8w199;
+            byte2_0 = 8w86;
+            byte3_0 = 8w99;
+            ipv4_address_0 = byte0_0 ++ byte1_0 ++ byte2_0 ++ byte3_0;
+            hdr.ipv4.srcAddr = ipv4_address_0;
+            meta.fwd.l2ptr = 32w0xec1c;
+        } else {
+            ipv4_da_lpm_0.apply();
         }
-        else 
-            if (standard_metadata.instance_type == 32w4) {
-                byte0_0 = 8w10;
-                byte1_0 = 8w199;
-                byte2_0 = 8w86;
-                byte3_0 = 8w99;
-                ipv4_address_0 = byte0_0 ++ byte1_0 ++ byte2_0 ++ byte3_0;
-                hdr.ipv4.srcAddr = ipv4_address_0;
-                meta.fwd.l2ptr = 32w0xec1c;
-            }
-            else 
-                ipv4_da_lpm_0.apply();
-        if (meta.fwd.l2ptr != 32w0) 
+        if (meta.fwd.l2ptr != 32w0) {
             mac_da_0.apply();
+        }
     }
 }
 
 control egress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_t standard_metadata) {
     @name(".NoAction") action NoAction_0() {
     }
-    @name(".my_drop") action my_drop_1() {
-        mark_to_drop();
+    @name(".my_drop") action my_drop_1(inout standard_metadata_t smeta_2) {
+        mark_to_drop(smeta_2);
     }
     @name("egress.set_out_bd") action set_out_bd(bit<24> bd) {
         meta.fwd.out_bd = bd;
@@ -163,11 +162,11 @@ control egress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_t
     }
     @name("egress.do_recirculate") action do_recirculate(bit<32> new_ipv4_dstAddr) {
         hdr.ipv4.dstAddr = new_ipv4_dstAddr;
-        recirculate<standard_metadata_t>(standard_metadata);
+        recirculate<tuple<>>({  });
     }
     @name("egress.do_clone_e2e") action do_clone_e2e(bit<48> smac) {
         hdr.ethernet.srcAddr = smac;
-        clone3<standard_metadata_t>(CloneType.E2E, 32w11, standard_metadata);
+        clone3<tuple<>>(CloneType.E2E, 32w11, {  });
     }
     @name("egress.send_frame") table send_frame_0 {
         key = {
@@ -177,27 +176,25 @@ control egress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_t
             rewrite_mac();
             do_recirculate();
             do_clone_e2e();
-            my_drop_1();
+            my_drop_1(standard_metadata);
         }
-        default_action = my_drop_1();
+        default_action = my_drop_1(standard_metadata);
     }
     apply {
         if (standard_metadata.instance_type == 32w1) {
             hdr.switch_to_cpu.setValid();
             hdr.switch_to_cpu.word0 = 32w0x12e012e;
             hdr.switch_to_cpu.word1 = 32w0x5a5a5a5a;
+        } else if (standard_metadata.instance_type == 32w2) {
+            hdr.switch_to_cpu.setValid();
+            hdr.switch_to_cpu.word0 = 32w0xe2e0e2e;
+            hdr.switch_to_cpu.word1 = 32w0x5a5a5a5a;
+        } else {
+            if (standard_metadata.instance_type == 32w5) {
+                get_multicast_copy_out_bd_0.apply();
+            }
+            send_frame_0.apply();
         }
-        else 
-            if (standard_metadata.instance_type == 32w2) {
-                hdr.switch_to_cpu.setValid();
-                hdr.switch_to_cpu.word0 = 32w0xe2e0e2e;
-                hdr.switch_to_cpu.word1 = 32w0x5a5a5a5a;
-            }
-            else {
-                if (standard_metadata.instance_type == 32w5) 
-                    get_multicast_copy_out_bd_0.apply();
-                send_frame_0.apply();
-            }
     }
 }
 

@@ -59,6 +59,9 @@ def add_developer_options(parser):
                         help="[Compiler debugging] Folder where P4 programs are dumped.")
     parser.add_argument("--toJson", dest="json", default=None,
                         help="Dump IR to JSON in the specified file.")
+    parser.add_argument("--fromJson", dest="json_source", default=None,
+                        help="Use IR from JSON representation dumped previously. \
+                        the compilation starts with reduced midEnd.")
     parser.add_argument("--pp", dest="pretty_print", default=None,
                         help="Pretty-print the program in the specified file.")
 
@@ -113,28 +116,44 @@ def main():
     parser.add_argument("-I", dest="search_path",
                         help="Add directory to include search path",
                         action="append", default=[])
-    parser.add_argument("-o", dest="output_directory",
+    parser.add_argument("-o", "--output", dest="output_directory",
                         help="Write output to the provided path",
                         action="store", metavar="PATH", default=".")
     parser.add_argument("--p4runtime-file",
                         help="Write a P4Runtime control plane API description "
-                        "to the specified file.",
+                        "to the specified file. "
+                        "[Deprecated; use '--p4runtime-files' instead]",
+                        action="store", default=None)
+    parser.add_argument("--p4runtime-files",
+                        help="Write the P4Runtime control plane API description (P4Info) "
+                        "to the specified files (comma-separated list); "
+                        "format is detected based on file suffix. "
+                        "Legal suffixes are .txt, .json, .bin.",
                         action="store", default=None)
     parser.add_argument("--p4runtime-format",
                         choices=["binary", "json", "text"],
                         help="Choose output format for the P4Runtime API "
-                        "description (default is binary).",
+                        "description (default is binary). "
+                        "[Deprecated; use '--p4runtime-files' instead]",
                         action="store", default="binary")
-    parser.add_argument("--target-help", dest="show_target_help",
+    parser.add_argument("--help-pragmas", "--pragma-help", "--pragmas-help",
+                        "--help-annotations", "--annotation-help", "--annotations-help",
+                        dest="help_pragmas", action="store_true", default=False,
+                        help = "Print the documentation about supported annotations/pragmas and exit.")
+    parser.add_argument("--help-targets", "--target-help", "--targets-help",
+                        dest="show_target_help",
                         help="Display target specific command line options.",
                         action="store_true", default=False)
     parser.add_argument("-S", dest="run_till_assembler",
                         help="Only run the preprocess and compilation steps",
                         action="store_true", default=False)
     parser.add_argument("--std", "-x", dest="language",
-                        choices = ["p4-14", "p4-16"],
+                        choices = ["p4-14", "p4_14", "p4-16", "p4_16"],
                         help="Treat subsequent input files as having type language.",
                         action="store", default="p4-16")
+    parser.add_argument("--ndebug", dest="ndebug_mode",
+                        help="Compile program in non-debug mode.\n",
+                        action="store_true", default=False)
 
     if (os.environ['P4C_BUILD_TYPE'] == "DEVELOPER"):
         add_developer_options(parser)
@@ -155,6 +174,10 @@ def main():
     user_defined_version = os.environ.get('P4C_DEFAULT_VERSION')
     if user_defined_version != None:
         opts.language = user_defined_version
+    # accept multiple ways of specifying which language, and ensure that it is a consistent
+    # string from now on.
+    if opts.language == "p4_14": opts.language = "p4-14"
+    if opts.language == "p4_16": opts.language = "p4-16"
 
     user_defined_target = os.environ.get('P4C_DEFAULT_TARGET')
     if user_defined_target != None:
@@ -173,10 +196,30 @@ def main():
         print display_supported_targets(cfg)
         sys.exit(0)
 
-    if not opts.source_file:
-        parser.error('No input specified.')
+    # When using --help-* options, we don't necessarily need to pass an input file
+    # However, by default the driver checks the input and fails if it does not exist.
+    # Also, loading the backend configuration files requires a source file to be set,
+    # so in that case, we set the input to dummy.p4 and expect that the backend itself
+    # will do its printing and ignore the input file.
+    # If not, the compiler will error out anyway.
+    checkInput = not opts.help_pragmas
 
-    if not os.path.isfile(opts.source_file):
+    input_specified = False
+    if opts.source_file:
+        input_specified = True
+    if (os.environ['P4C_BUILD_TYPE'] == "DEVELOPER"):
+        if opts.json_source:
+            input_specified = True
+    if checkInput and not input_specified:
+        parser.error('No input specified.')
+    elif not checkInput:
+        opts.source_file = "dummy.p4"
+
+    if (os.environ['P4C_BUILD_TYPE'] == "DEVELOPER"):
+        if opts.json_source:
+            opts.source_file = opts.json_source
+
+    if checkInput and not os.path.isfile(opts.source_file):
         print >> sys.stderr, 'Input file ' + opts.source_file + ' does not exist'
         sys.exit(1)
 

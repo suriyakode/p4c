@@ -36,7 +36,7 @@ struct metadata {
 typedef bit<48> ByteCounter_t;
 typedef bit<32> PacketCounter_t;
 typedef bit<80> PacketByteCounter_t;
-const PortId_t NUM_PORTS = 10w512;
+const bit<32> NUM_PORTS = 32w512;
 struct headers {
     ethernet_t ethernet;
     ipv4_t     ipv4;
@@ -99,8 +99,9 @@ control ingress(inout headers hdr, inout metadata user_meta, in psa_ingress_inpu
     }
     apply {
         port_bytes_in.count(istd.ingress_port);
-        if (hdr.ipv4.isValid()) 
+        if (hdr.ipv4.isValid()) {
             ipv4_da_lpm.apply();
+        }
     }
 }
 

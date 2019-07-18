@@ -56,11 +56,11 @@ control verifyChecksum(inout headers hdr, inout metadata meta) {
 control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
     @name(".NoAction") action NoAction_0() {
     }
-    @name("ingress.drop") action drop_1() {
-        mark_to_drop();
+    @name("ingress.drop") action drop() {
+        mark_to_drop(standard_metadata);
     }
-    @name("ingress.drop") action drop_3() {
-        mark_to_drop();
+    @name("ingress.drop") action drop_2() {
+        mark_to_drop(standard_metadata);
     }
     @name("ingress.ipv4_forward") action ipv4_forward(macAddr_t dstAddr, egressSpec_t port) {
         meta.test_bool = true;
@@ -72,7 +72,7 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
         actions = {
             NoAction_0();
             ipv4_forward();
-            drop_1();
+            drop();
         }
         size = 1024;
         default_action = NoAction_0();
@@ -88,16 +88,18 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
     }
     @hidden table tbl_drop {
         actions = {
-            drop_3();
+            drop_2();
         }
-        const default_action = drop_3();
+        const default_action = drop_2();
     }
     apply {
         tbl_act.apply();
-        if (hdr.ipv4.isValid()) 
+        if (hdr.ipv4.isValid()) {
             ipv4_lpm_0.apply();
-        if (!meta.test_bool) 
+        }
+        if (!meta.test_bool) {
             tbl_drop.apply();
+        }
     }
 }
 

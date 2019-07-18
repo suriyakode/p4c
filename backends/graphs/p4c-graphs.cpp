@@ -45,6 +45,7 @@ limitations under the License.
 #include "graphs.h"
 #include "controls.h"
 #include "parsers.h"
+
 #include "pathEncoding.h"
 #include "injectEncoding.h"
 #include "encodeActions.h"
@@ -52,6 +53,9 @@ limitations under the License.
 #include <fstream>
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
+
+#include "ir/json_loader.h"
+#include "fstream"
 
 namespace graphs {
 
@@ -122,12 +126,18 @@ class BallLarus : public PassManager {
 class Options : public CompilerOptions {
  public:
     cstring graphsDir{"."};
+    // read from json
+    bool loadIRFromJson = false;
     Options() {
         registerOption("--graphs-dir", "dir",
                        [this](const char* arg) { graphsDir = arg; return true; },
                        "Use this directory to dump graphs in dot format "
                        "(default is current working directory)\n");
-     }
+        registerOption("--fromJSON", "file",
+                [this](const char* arg) { loadIRFromJson = true; file = arg; return true; },
+                "Use IR representation from JsonFile dumped previously,"\
+                "the compilation starts with reduced midEnd.");
+    }
 };
 
 using GraphsContext = P4CContextWithOptions<Options>;
@@ -143,31 +153,53 @@ int main(int argc, char *const argv[]) {
     options.langVersion = CompilerOptions::FrontendVersion::P4_16;
     options.compilerVersion = "6";
 
-    if (options.process(argc, argv) != nullptr)
-        options.setInputFile();
+    if (options.process(argc, argv) != nullptr) {
+            if (options.loadIRFromJson == false)
+                    options.setInputFile();
+    }
     if (::errorCount() > 0)
         return 1;
 
     auto hook = options.getDebugHook();
 
-    auto program = P4::parseP4File(options);
-    /*if (program == nullptr || ::errorCount() > 0)
-        return 1;
 
-    try {
-        P4::P4COptionPragmaParser optionsPragmaParser;
-        program->apply(P4::ApplyOptionsPragmas(optionsPragmaParser));
+    const IR::P4Program *program = nullptr;
 
-        P4::FrontEnd fe;
-        fe.addDebugHook(hook);
-        program = fe.run(options, program);
-    } catch (const Util::P4CExceptionBase &bug) {
-        std::cerr << bug.what() << std::endl;
-        return 1;
+    if (options.loadIRFromJson) {
+        std::filebuf fb;
+        if (fb.open(options.file, std::ios::in) == nullptr) {
+            ::error("%s: No such file or directory.", options.file);
+            return 1;
+        }
+
+        std::istream inJson(&fb);
+        JSONLoader jsonFileLoader(inJson);
+        if (jsonFileLoader.json == nullptr) {
+            ::error("Not valid input file");
+            return 1;
+        }
+        program = new IR::P4Program(jsonFileLoader);
+        fb.close();
+    } else {
+        program = P4::parseP4File(options);
+        if (program == nullptr || ::errorCount() > 0)
+            return 1;
+
+        try {
+            P4::P4COptionPragmaParser optionsPragmaParser;
+            program->apply(P4::ApplyOptionsPragmas(optionsPragmaParser));
+
+            P4::FrontEnd fe;
+            fe.addDebugHook(hook);
+            program = fe.run(options, program);
+        } catch (const Util::P4CExceptionBase &bug) {
+            std::cerr << bug.what() << std::endl;
+            return 1;
+        }
+        if (program == nullptr || ::errorCount() > 0)
+            return 1;
     }
-    if (program == nullptr || ::errorCount() > 0)
-        return 1;*/
-/*
+
     graphs::MidEnd midEnd(options);
     midEnd.addDebugHook(hook);
     const IR::ToplevelBlock *top = nullptr;
@@ -182,7 +214,7 @@ int main(int argc, char *const argv[]) {
     if (::errorCount() > 0)
         return 1;
 
-    LOG2("Generating graphs under " << options.graphsDir);*/
+    LOG2("Generating graphs under " << options.graphsDir);
     LOG2("Generating control graphs");
     std::ifstream table_info("variables.json");
     json j;

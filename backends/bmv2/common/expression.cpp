@@ -107,12 +107,11 @@ void ExpressionConverter::postorder(const IR::BoolLiteral* expression)  {
 
 void ExpressionConverter::postorder(const IR::MethodCallExpression* expression)  {
     auto instance = P4::MethodInstance::resolve(expression, refMap, typeMap);
-    if (instance->is<P4::ExternMethod>()) {
-        auto em = instance->to<P4::ExternMethod>();
+    if (auto em = instance->to<P4::ExternMethod>()) {
         if (em->originalExternType->name == corelib.packetIn.name &&
             em->method->name == corelib.packetIn.lookahead.name) {
-            BUG_CHECK(expression->typeArguments->size() == 1,
-                      "Expected 1 type parameter for %1%", em->method);
+            if (expression->typeArguments->size() != 1)
+                ::error(ErrorType::ERR_INVALID, "Expected 1 type parameter for %1%", em->method);
             auto targ = expression->typeArguments->at(0);
             auto typearg = typeMap->getTypeType(targ, true);
             int width = typearg->width_bits();
@@ -125,8 +124,7 @@ void ExpressionConverter::postorder(const IR::MethodCallExpression* expression) 
             mapExpression(expression, j);
             return;
         }
-    } else if (instance->is<P4::BuiltInMethod>()) {
-        auto bim = instance->to<P4::BuiltInMethod>();
+    } else if (auto bim = instance->to<P4::BuiltInMethod>()) {
         if (bim->name == IR::Type_Header::isValid) {
             auto type = typeMap->getType(bim->appliedTo, true);
             auto result = new Util::JsonObject();
@@ -206,8 +204,7 @@ void ExpressionConverter::postorder(const IR::ArrayIndex* expression)  {
     }
 
     if (!expression->right->is<IR::Constant>()) {
-        ::error("%1%: all array indexes must be constant on this architecture",
-                expression->right);
+        ::error(ErrorType::ERR_INVALID, "all array indexes must be constant", expression->right);
     } else {
         int index = expression->right->to<IR::Constant>()->asInt();
         elementAccess += "[" + Util::toString(index) + "]";
@@ -254,7 +251,9 @@ void ExpressionConverter::postorder(const IR::Member* expression)  {
         result->emplace("type", "hexstr");
         auto decl = type->to<IR::Type_Error>()->getDeclByName(expression->member.name);
         auto errorValue = structure->errorCodesMap.at(decl);
-        result->emplace("value", Util::toString(errorValue));
+        // this generates error constant like hex value
+        auto reprValue = stringRepr(errorValue);
+        result->emplace("value", reprValue);
         mapExpression(expression, result);
         return;
     }
@@ -267,8 +266,12 @@ void ExpressionConverter::postorder(const IR::Member* expression)  {
             return;
         }
         // convert normal parameters
-        if (type->is<IR::Type_Stack>()) {
-            result->emplace("type", "header_stack");
+        if (auto st = type->to<IR::Type_Stack>()) {
+            auto et = typeMap->getTypeType(st->elementType, true);
+            if (et->is<IR::Type_HeaderUnion>())
+                result->emplace("type", "header_union_stack");
+            else
+                result->emplace("type", "header_stack");
             result->emplace("value", fieldName);
         } else if (type->is<IR::Type_HeaderUnion>()) {
             result->emplace("type", "header_union");
@@ -294,7 +297,7 @@ void ExpressionConverter::postorder(const IR::Member* expression)  {
             LOG3("looking up field " << field);
             CHECK_NULL(field);
             auto name = ::get(structure->scalarMetadataFields, field);
-            CHECK_NULL(name);
+            BUG_CHECK((name != nullptr), "NULL name: %1%", field->name);
             if (type->is<IR::Type_Bits>() || type->is<IR::Type_Error>() ||
                 leftValue || simpleExpressionsOnly) {
                 result->emplace("type", "field");
@@ -333,7 +336,7 @@ void ExpressionConverter::postorder(const IR::Member* expression)  {
         auto mem = expression->expr->to<IR::Member>();
         auto memtype = typeMap->getType(mem->expr, true);
         if (memtype->is<IR::Type_Stack>() && mem->member == IR::Type_Stack::next)
-            ::error("%1%: Reading next field, which is always uninitialized", mem);
+            ::error(ErrorType::ERR_UNINITIALIZED, "next field read", mem);
         // array.last.field => type: "stack_field", value: [ array, field ]
         if (memtype->is<IR::Type_Stack>() && mem->member == IR::Type_Stack::last) {
             auto l = get(mem->expr);
@@ -355,12 +358,20 @@ void ExpressionConverter::postorder(const IR::Member* expression)  {
         if (parentType->is<IR::Type_HeaderUnion>()) {
             BUG_CHECK(l->is<Util::JsonObject>(), "Not a JsonObject");
             auto lv = l->to<Util::JsonObject>()->get("value");
-            BUG_CHECK(lv->is<Util::JsonValue>(), "Not a JsonValue");
-            fieldName = lv->to<Util::JsonValue>()->getString() + "." + fieldName;
-            // Each header in a union is allocated a separate header instance.
-            // Refer to that instance directly.
-            result->emplace("type", "header");
-            result->emplace("value", fieldName);
+            if (lv->is<Util::JsonValue>()) {
+                fieldName = lv->to<Util::JsonValue>()->getString() + "." + fieldName;
+                // Each header in a union is allocated a separate header instance.
+                // Refer to that instance directly.
+                result->emplace("type", "header");
+                result->emplace("value", fieldName);
+            } else {
+                // lv must be a reference to a union stack field
+                auto a = lv->to<Util::JsonArray>()->clone();
+                CHECK_NULL(a);
+                result->emplace("type", "union_stack_field");
+                a->append(fieldName);
+                result->emplace("value", a);
+            }
         } else if (parentType->is<IR::Type_Stack>() &&
                    expression->member == IR::Type_Stack::lastIndex) {
             auto l = get(expression->expr);
@@ -433,7 +444,7 @@ void ExpressionConverter::postorder(const IR::Mux* expression)  {
     auto result = new Util::JsonObject();
     mapExpression(expression, result);
     if (simpleExpressionsOnly) {
-        ::error("%1%: expression to complex for this target", expression);
+        ::error(ErrorType::ERR_UNSUPPORTED_ON_TARGET, "expression too complex", expression);
         return;
     }
 
@@ -473,7 +484,7 @@ void ExpressionConverter::binary(const IR::Operation_Binary* expression) {
     auto result = new Util::JsonObject();
     mapExpression(expression, result);
     if (simpleExpressionsOnly) {
-        ::error("%1%: expression to complex for this target", expression);
+        ::error(ErrorType::ERR_UNSUPPORTED_ON_TARGET, "expression too complex", expression);
         return;
     }
 
@@ -528,7 +539,7 @@ void ExpressionConverter::postorder(const IR::ListExpression* expression)  {
     auto result = new Util::JsonArray();
     mapExpression(expression, result);
     if (simpleExpressionsOnly) {
-        ::error("%1%: expression to complex for this target", expression);
+        ::error(ErrorType::ERR_UNSUPPORTED_ON_TARGET, "expression too complex", expression);
         return;
     }
 
@@ -543,7 +554,7 @@ void ExpressionConverter::postorder(const IR::StructInitializerExpression* expre
     auto result = new Util::JsonArray();
     mapExpression(expression, result);
     if (simpleExpressionsOnly) {
-        ::error("%1%: expression to complex for this target", expression);
+        ::error(ErrorType::ERR_UNSUPPORTED_ON_TARGET, "expression too complex", expression);
         return;
     }
 
@@ -557,7 +568,7 @@ void ExpressionConverter::postorder(const IR::Operation_Unary* expression)  {
     auto result = new Util::JsonObject();
     mapExpression(expression, result);
     if (simpleExpressionsOnly) {
-        ::error("%1%: expression to complex for this target", expression);
+        ::error(ErrorType::ERR_UNSUPPORTED_ON_TARGET, "expression too complex", expression);
         return;
     }
 
@@ -581,9 +592,13 @@ void ExpressionConverter::postorder(const IR::PathExpression* expression)  {
             structure->nonActionParameters.end()) {
             auto type = typeMap->getType(param, true);
             if (type->is<IR::Type_StructLike>()) {
-                auto result = new Util::JsonObject();
-                result->emplace("type", "header");
-                result->emplace("value", param->name.name);
+                auto result = convertParam(param, "");
+                if (result == nullptr) {
+                    auto r = new Util::JsonObject();
+                    r->emplace("type", "header");
+                    r->emplace("value", param->name.name);
+                    result = r;
+                }
                 mapExpression(expression, result);
             } else {
                 mapExpression(expression, new Util::JsonValue(param->name.name));
@@ -631,8 +646,12 @@ void ExpressionConverter::postorder(const IR::PathExpression* expression)  {
             auto f = mkArrayField(r, "value");
             f->append(scalarsName);
             f->append(var->name);
-        } else if (type->is<IR::Type_Stack>()) {
-            result->emplace("type", "header_stack");
+        } else if (auto st = type->to<IR::Type_Stack>()) {
+            auto et = typeMap->getTypeType(st->elementType, true);
+            if (et->is<IR::Type_HeaderUnion>())
+                result->emplace("type", "header_union_stack");
+            else
+                result->emplace("type", "header_stack");
             result->emplace("value", var->name);
         } else if (type->is<IR::Type_Error>()) {
             result->emplace("type", "field");
@@ -648,6 +667,25 @@ void ExpressionConverter::postorder(const IR::PathExpression* expression)  {
 
 void ExpressionConverter::postorder(const IR::TypeNameExpression* expression)  {
     (void)expression;
+}
+
+void ExpressionConverter::postorder(const IR::Slice *expression) {
+    auto result = new Util::JsonObject();
+    auto expr = expression->e0;
+    int h = expression->getH();
+    int l = expression->getL();
+    auto mask = Util::maskFromSlice(h, l);
+    result->emplace("type", "expression");
+    auto band = new Util::JsonObject();
+    result->emplace("value", band);
+    band->emplace("op", "&");
+    auto right = new Util::JsonObject();
+    auto bitwidth = expression->type->width_bits();
+    right->emplace("type", "hexstr");
+    right->emplace("value", stringRepr(mask, ROUNDUP(bitwidth, 8)));
+    band->emplace("left", get(expr));
+    band->emplace("right", right);
+    mapExpression(expression, result);
 }
 
 void ExpressionConverter::postorder(const IR::Expression* expression)  {
@@ -683,19 +721,20 @@ ExpressionConverter::convert(const IR::Expression* e, bool doFixup, bool wrap, b
     }
 
     std::set<cstring> to_wrap({"expression", "stack_field"});
-
     // This is weird, but that's how it is: expression and stack_field must be wrapped in
     // another outer object. In a future version of the bmv2 JSON, this will not be needed
     // anymore as expressions will be treated in a more uniform way.
-    if (wrap && result->is<Util::JsonObject>()) {
-        auto to = result->to<Util::JsonObject>()->get("type");
-        if (to != nullptr && to->to<Util::JsonValue>() != nullptr) {
-            auto jv = *to->to<Util::JsonValue>();
-            if (jv.isString() && to_wrap.find(jv.getString()) != to_wrap.end()) {
-                auto rwrap = new Util::JsonObject();
-                rwrap->emplace("type", "expression");
-                rwrap->emplace("value", result);
-                result = rwrap;
+    if (wrap) {
+        if (auto ro = result->to<Util::JsonObject>()) {
+            if (auto to = ro->get("type")) {
+                if (auto jv = to->to<Util::JsonValue>()) {
+                    if (jv->isString() && to_wrap.find(jv->getString()) != to_wrap.end()) {
+                        auto rwrap = new Util::JsonObject();
+                        rwrap->emplace("type", "expression");
+                        rwrap->emplace("value", result);
+                        result = rwrap;
+                    }
+                }
             }
         }
     }

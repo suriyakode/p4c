@@ -55,7 +55,7 @@ ResolutionContext::resolve(IR::ID name, P4::ResolutionType type, bool forwardOK)
                 BUG("Unexpected enumeration value %1%", static_cast<int>(type));
             }
 
-            if (!forwardOK) {
+            if (!forwardOK && name.srcInfo.isValid()) {
                 std::function<bool(const IR::IDeclaration*)> locationFilter =
                         [name](const IR::IDeclaration* d) {
                     Util::SourceInfo nsi = name.srcInfo;
@@ -96,7 +96,7 @@ ResolutionContext::resolve(IR::ID name, P4::ResolutionType type, bool forwardOK)
                 BUG("Unexpected enumeration value %1%", static_cast<int>(type));
             }
 
-            if (!forwardOK) {
+            if (!forwardOK && name.srcInfo.isValid()) {
                 Util::SourceInfo nsi = name.srcInfo;
                 Util::SourceInfo dsi = decl->getNode()->srcInfo;
                 bool before = dsi <= nsi;
@@ -138,13 +138,13 @@ ResolutionContext::resolveUnique(IR::ID name,
     }
 
     if (decls->empty()) {
-        ::error("Could not find declaration for %1%", name);
+        ::error(ErrorType::ERR_NOT_FOUND, "declaration", name);
         return nullptr;
     }
     if (decls->size() == 1)
         return decls->at(0);
 
-    ::error("Multiple matching declarations for %1%", name);
+    ::error(ErrorType::ERR_INVALID, "multiple matching declarations", name);
     for (auto a : *decls)
         ::error("Candidate: %1%", a);
     return nullptr;
@@ -251,7 +251,7 @@ void ResolveReferences::checkShadowing(const IR::INamespace* ns) const {
                 // attribute locals often match attributes
                 continue;
 
-            ::warning("%1% shadows %2%", node, pnode);
+            ::warning(ErrorType::WARN_SHADOWING, "%1% shadows %2%", node, pnode);
         }
     }
 }
@@ -293,7 +293,8 @@ void ResolveReferences::postorder(const IR::P4Program*) {
 bool ResolveReferences::preorder(const IR::This* pointer) {
     auto decl = findContext<IR::Declaration_Instance>();
     if (findContext<IR::Function>() == nullptr || decl == nullptr)
-        ::error("%1%: can only be used in the definition of an abstract method", pointer);
+        ::error(ErrorType::ERR_INVALID,
+                "%1% can only be used in the definition of an abstract method", pointer);
     refMap->setDeclaration(pointer, decl);
     return true;
 }
@@ -404,10 +405,15 @@ void ResolveReferences::postorder(const IR::Type_Method *t) {
 
 bool ResolveReferences::preorder(const IR::Type_Extern *t) {
     refMap->usedName(t->name.name);
-    addToContext(t->typeParameters); return true; }
+    // FIXME -- should the typeParamters be part of the extern's scope?
+    addToContext(t->typeParameters);
+    addToContext(t);
+    return true; }
 
 void ResolveReferences::postorder(const IR::Type_Extern *t) {
-    removeFromContext(t->typeParameters); }
+    removeFromContext(t);
+    removeFromContext(t->typeParameters);
+    }
 
 bool ResolveReferences::preorder(const IR::ParserState *s) {
     refMap->usedName(s->name.name);

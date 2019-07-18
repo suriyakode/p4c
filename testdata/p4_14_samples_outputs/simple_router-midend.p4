@@ -27,8 +27,7 @@ header ipv4_t {
 }
 
 struct metadata {
-    @name(".routing_metadata") 
-    routing_metadata_t routing_metadata;
+    bit<32> _routing_metadata_nhop_ipv40;
 }
 
 struct headers {
@@ -62,7 +61,7 @@ control egress(inout headers hdr, inout metadata meta, inout standard_metadata_t
         hdr.ethernet.srcAddr = smac;
     }
     @name("._drop") action _drop() {
-        mark_to_drop();
+        mark_to_drop(standard_metadata);
     }
     @name(".send_frame") table send_frame_0 {
         actions = {
@@ -85,19 +84,19 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
     @name(".NoAction") action NoAction_1() {
     }
     @name("._drop") action _drop_2() {
-        mark_to_drop();
+        mark_to_drop(standard_metadata);
     }
     @name("._drop") action _drop_5() {
-        mark_to_drop();
+        mark_to_drop(standard_metadata);
     }
     @name("._drop") action _drop_6() {
-        mark_to_drop();
+        mark_to_drop(standard_metadata);
     }
     @name(".set_dmac") action set_dmac(bit<48> dmac) {
         hdr.ethernet.dstAddr = dmac;
     }
     @name(".set_nhop") action set_nhop(bit<32> nhop_ipv4, bit<9> port) {
-        meta.routing_metadata.nhop_ipv4 = nhop_ipv4;
+        meta._routing_metadata_nhop_ipv40 = nhop_ipv4;
         standard_metadata.egress_spec = port;
         hdr.ipv4.ttl = hdr.ipv4.ttl + 8w255;
     }
@@ -117,7 +116,7 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
             @defaultonly NoAction_1();
         }
         key = {
-            meta.routing_metadata.nhop_ipv4: exact @name("routing_metadata.nhop_ipv4") ;
+            meta._routing_metadata_nhop_ipv40: exact @name("routing_metadata.nhop_ipv4") ;
         }
         size = 512;
         default_action = NoAction_1();
@@ -137,9 +136,9 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
         if (hdr.ipv4.isValid() && hdr.ipv4.ttl > 8w0) {
             ipv4_lpm_0.apply();
             forward_0.apply();
-        }
-        else 
+        } else {
             drop_all_0.apply();
+        }
     }
 }
 

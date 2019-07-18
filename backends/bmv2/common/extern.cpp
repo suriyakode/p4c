@@ -74,7 +74,7 @@ ExternConverter::convertExternObject(ConversionContext* ctxt,
         primitive->emplace_non_null("source_info", mc->sourceInfoJsonObj());
         auto etr = new Util::JsonObject();
         etr->emplace("type", "extern");
-        etr->emplace("value", em->object->getName());
+        etr->emplace("value", em->object->controlPlaneName());
         parameters->append(etr);
         for (auto arg : *mc->arguments) {
             auto args = ctxt->conv->convert(arg->expression);
@@ -82,19 +82,42 @@ ExternConverter::convertExternObject(ConversionContext* ctxt,
         }
         return primitive;
     } else {
-        ::error("Unknown extern method %1% from type %2%",
+        ::error(ErrorType::ERR_UNKNOWN, "Unknown extern method %1% from type %2%",
                 em->method->name, em->originalExternType->name);
         return nullptr;
     }
 }
 
+/// This method is invoked for all externs that do not have a registered
+/// conversion, i.e., unknown by the architecture.
 void
-ExternConverter::convertExternInstance(ConversionContext* ,
-                                       const IR::Declaration* ,
+ExternConverter::convertExternInstance(ConversionContext* ctxt,
+                                       const IR::Declaration* decl,
                                        const IR::ExternBlock* eb,
                                        const bool& emitExterns) {
-    if (!emitExterns)
-        ::error("Unknown extern instance %1%", eb->type->name);
+    if (!emitExterns) {
+        ::error(ErrorType::ERR_UNKNOWN, "extern instance", eb->type->name);
+        return;
+    }
+    auto attrs = new Util::JsonArray();
+    auto params = eb->getConstructorParameters();
+    for (auto param : params->parameters) {
+        auto val = eb->getParameterValue(param->name);
+        cstring type;
+        cstring value;
+        if (auto cst = val->to<IR::Constant>()) {
+            type = "hexstr";
+            value = Util::toString(&cst->value, 16);
+        } else if (auto str = val->to<IR::StringLiteral>()) {
+            type = "string";
+            value = str->value;
+        } else {
+            modelError("%1%: parameter type not unsupported", param->type);
+            continue;
+        }
+        ctxt->json->add_extern_attribute(param->name, type, value, attrs);
+    }
+    ctxt->json->add_extern(decl->controlPlaneName(), eb->type->getName(), attrs);
 }
 
 Util::IJson*
@@ -104,7 +127,7 @@ ExternConverter::convertExternFunction(ConversionContext* ctxt,
                                        const IR::StatOrDecl* s,
                                        const bool emitExterns) {
     if (!emitExterns) {
-        ::error("Unknown extern function %1%", ef->method->name);
+        ::error(ErrorType::ERR_UNKNOWN, "extern function", ef->method->name);
         return nullptr;
     }
     auto primitive = mkPrimitive(ef->method->name);
@@ -119,8 +142,9 @@ ExternConverter::convertExternFunction(ConversionContext* ctxt,
 
 void
 ExternConverter::modelError(const char* format, const IR::Node* node) const {
-    ::error(format, node);
-    ::error("Are you using an up-to-date v1model.p4?");
+    cstring errMsg = cstring(format) +
+                     ". Are you using an up-to-date v1model.p4?";
+    ::error(ErrorType::ERR_UNSUPPORTED_ON_TARGET, errMsg.c_str(), node);
 }
 
 void
@@ -150,7 +174,10 @@ ExternConverter::addToFieldList(ConversionContext* ctxt,
         return;
     }
 
+    bool simple = ctxt->conv->simpleExpressionsOnly;
+    ctxt->conv->simpleExpressionsOnly = true;  // we do not want casts d2b in field_lists
     auto j = ctxt->conv->convert(expr);
+    ctxt->conv->simpleExpressionsOnly = simple;  // restore state
     if (auto jo = j->to<Util::JsonObject>()) {
         if (auto t = jo->get("type")) {
             if (auto type = t->to<Util::JsonValue>()) {
@@ -245,8 +272,43 @@ ExternConverter::convertHashAlgorithm(cstring algorithm) {
     else if (algorithm == P4V1::V1Model::instance.algorithm.xor16.name)
         result = "xor16";
     else
-        ::error("%1%: unexpected algorithm", algorithm);
+        ::error("Unsupported algorithm %1%", algorithm);
     return result;
+}
+
+ExternConverter_assert ExternConverter_assert::singleton;
+ExternConverter_assume ExternConverter_assume::singleton;
+
+Util::IJson*
+ExternConverter::convertAssertAssume(ConversionContext* ctxt,
+    const IR::MethodCallExpression* methodCall, const P4::ExternFunction* ef) {
+     if (methodCall->arguments->size() != 1) {
+        ::error("Expected 1 arguments for %1%", methodCall);
+        return nullptr;
+    }
+    auto primitive = mkPrimitive(ef->method->name.name);
+    auto parameters = mkParameters(primitive);
+    auto cond = methodCall->arguments->at(0);
+    // wrap expression in an additional JSON expression block
+    // cast the result of expression to b2d
+    auto jsonExpr = ctxt->conv->convert(cond->expression, true, true, true);
+    parameters->append(jsonExpr);
+    primitive->emplace_non_null("source_info", methodCall->sourceInfoJsonObj());
+    return primitive;
+}
+
+Util::IJson* ExternConverter_assert::convertExternFunction(
+    UNUSED ConversionContext* ctxt, UNUSED const P4::ExternFunction* ef,
+    UNUSED const IR::MethodCallExpression* mc, UNUSED const IR::StatOrDecl* s,
+    UNUSED const bool emitExterns) {
+    return convertAssertAssume(ctxt, mc, ef);
+}
+
+Util::IJson* ExternConverter_assume::convertExternFunction(
+    UNUSED ConversionContext* ctxt, UNUSED const P4::ExternFunction* ef,
+    UNUSED const IR::MethodCallExpression* mc, UNUSED const IR::StatOrDecl* s,
+    UNUSED const bool emitExterns) {
+    return ExternConverter::convertAssertAssume(ctxt, mc, ef);
 }
 
 }  // namespace BMV2

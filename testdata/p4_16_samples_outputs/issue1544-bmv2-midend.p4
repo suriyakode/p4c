@@ -23,8 +23,41 @@ parser ParserImpl(packet_in packet, out headers hdr, inout metadata meta, inout 
 
 control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
     bit<16> retval;
+    standard_metadata_t smeta;
     @name(".my_drop") action my_drop() {
-        mark_to_drop();
+        smeta.ingress_port = standard_metadata.ingress_port;
+        smeta.egress_spec = standard_metadata.egress_spec;
+        smeta.egress_port = standard_metadata.egress_port;
+        smeta.instance_type = standard_metadata.instance_type;
+        smeta.packet_length = standard_metadata.packet_length;
+        smeta.enq_timestamp = standard_metadata.enq_timestamp;
+        smeta.enq_qdepth = standard_metadata.enq_qdepth;
+        smeta.deq_timedelta = standard_metadata.deq_timedelta;
+        smeta.deq_qdepth = standard_metadata.deq_qdepth;
+        smeta.ingress_global_timestamp = standard_metadata.ingress_global_timestamp;
+        smeta.egress_global_timestamp = standard_metadata.egress_global_timestamp;
+        smeta.mcast_grp = standard_metadata.mcast_grp;
+        smeta.egress_rid = standard_metadata.egress_rid;
+        smeta.checksum_error = standard_metadata.checksum_error;
+        smeta.parser_error = standard_metadata.parser_error;
+        smeta.priority = standard_metadata.priority;
+        mark_to_drop(smeta);
+        standard_metadata.ingress_port = smeta.ingress_port;
+        standard_metadata.egress_spec = smeta.egress_spec;
+        standard_metadata.egress_port = smeta.egress_port;
+        standard_metadata.instance_type = smeta.instance_type;
+        standard_metadata.packet_length = smeta.packet_length;
+        standard_metadata.enq_timestamp = smeta.enq_timestamp;
+        standard_metadata.enq_qdepth = smeta.enq_qdepth;
+        standard_metadata.deq_timedelta = smeta.deq_timedelta;
+        standard_metadata.deq_qdepth = smeta.deq_qdepth;
+        standard_metadata.ingress_global_timestamp = smeta.ingress_global_timestamp;
+        standard_metadata.egress_global_timestamp = smeta.egress_global_timestamp;
+        standard_metadata.mcast_grp = smeta.mcast_grp;
+        standard_metadata.egress_rid = smeta.egress_rid;
+        standard_metadata.checksum_error = smeta.checksum_error;
+        standard_metadata.parser_error = smeta.parser_error;
+        standard_metadata.priority = smeta.priority;
     }
     @name("ingress.set_port") action set_port(bit<9> output_port) {
         standard_metadata.egress_spec = output_port;
@@ -68,10 +101,11 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
     }
     apply {
         mac_da_0.apply();
-        if (hdr.ethernet.srcAddr[15:0] > 16w5) 
+        if (hdr.ethernet.srcAddr[15:0] > 16w5) {
             tbl_act.apply();
-        else 
+        } else {
             tbl_act_0.apply();
+        }
         tbl_act_1.apply();
     }
 }

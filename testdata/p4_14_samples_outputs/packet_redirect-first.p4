@@ -2,13 +2,9 @@
 #include <v1model.p4>
 
 struct intrinsic_metadata_t {
-    bit<4>  mcast_grp;
+    bit<16> mcast_grp;
     bit<4>  egress_rid;
-    bit<16> mcast_hash;
-    bit<32> lf_field_list;
     bit<64> ingress_global_timestamp;
-    bit<16> resubmit_flag;
-    bit<16> recirculate_flag;
 }
 
 struct metaA_t {
@@ -27,12 +23,10 @@ header hdrA_t {
 }
 
 struct metadata {
-    @name(".intrinsic_metadata") 
-    intrinsic_metadata_t intrinsic_metadata;
     @name(".metaA") 
-    metaA_t              metaA;
+    metaA_t metaA;
     @name(".metaB") 
-    metaB_t              metaB;
+    metaB_t metaB;
 }
 
 struct headers {
@@ -82,8 +76,8 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
         standard_metadata.egress_spec = port;
         meta.metaA.f1 = 8w1;
     }
-    @name("._multicast") action _multicast(bit<4> mgrp) {
-        meta.intrinsic_metadata.mcast_grp = mgrp;
+    @name("._multicast") action _multicast(bit<16> mgrp) {
+        standard_metadata.mcast_grp = mgrp;
     }
     @name("._resubmit") action _resubmit() {
         resubmit<tuple<standard_metadata_t, metaA_t>>({ standard_metadata, meta.metaA });

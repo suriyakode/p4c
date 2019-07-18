@@ -48,9 +48,8 @@ ProgramStructure::ProgramStructure() :
         verifyChecksums(nullptr), updateChecksums(nullptr),
         deparser(nullptr), latest(nullptr) {
     ingress = nullptr;
-    declarations = new IR::IndexedVector<IR::Node>();
+    declarations = new IR::Vector<IR::Node>();
     emptyTypeArguments = new IR::Vector<IR::Type>();
-    conversionContext.clear();
     for (auto c : P4::reservedWords)
         allNames.emplace(c);
 }
@@ -71,6 +70,7 @@ ProgramStructure::addGlobalNameAnnotation(cstring name,
 
 cstring ProgramStructure::makeUniqueName(cstring base) {
     cstring name = cstring::make_unique(allNames, base, '_');
+    LOG3(" make unique name " << name);
     allNames.emplace(name);
     return name;
 }
@@ -102,7 +102,7 @@ void ProgramStructure::checkHeaderType(const IR::Type_StructLike* hdr, bool meta
 }
 
 cstring ProgramStructure::createType(const IR::Type_StructLike* type, bool header,
-                                  std::unordered_set<const IR::Type*> *converted) {
+                                     std::unordered_set<const IR::Type*> *converted) {
     if (converted->count(type))
         return type->name;
     converted->emplace(type);
@@ -130,7 +130,7 @@ void ProgramStructure::createTypes() {
     // Metadata first
     for (auto it : metadata) {
         auto type = it.first->type;
-        if (type->name.name == v1model.standardMetadataType.name)
+        if (systemHeaderTypes.count(type->name.name) != 0)
             continue;
         createType(type, false, &converted);
     }
@@ -166,6 +166,8 @@ void ProgramStructure::createTypes() {
     for (auto it : headers) {
         auto type = it.first->type;
         CHECK_NULL(type);
+        if (systemHeaderTypes.count(type->externalName()) != 0)
+            continue;
         createType(type, true, &converted);
     }
     for (auto it : stacks) {
@@ -216,10 +218,15 @@ const IR::Type_Struct* ProgramStructure::createFieldListType(const IR::Expressio
 void ProgramStructure::createStructures() {
     auto metadata = new IR::Type_Struct(v1model.metadataType.Id());
     for (auto it : this->metadata) {
-        if (it.first->name == v1model.standardMetadata.name)
+        if (systemHeaderTypes.count(it.first->type->name))
             continue;
         IR::ID id = it.first->name;
         auto type = it.first->type;
+        auto h = headers.get(it.first->name);
+        if (h != nullptr)
+            ::warning(ErrorType::ERR_DUPLICATE,
+                      "header and metadata instances %2% with the same name",
+                      it.first, h);
         auto type_name = types.get(type);
         auto ht = type->to<IR::Type_Struct>();
         auto path = new IR::Path(type_name);
@@ -235,6 +242,9 @@ void ProgramStructure::createStructures() {
         IR::ID id = it.first->name;
         auto type = it.first->type;
         auto type_name = types.get(type);
+        // filter out headers defined in architecture
+        if (systemHeaderTypes.count(type_name))
+            continue;
         auto ht = type->to<IR::Type_Header>();
         auto path = new IR::Path(type_name);
         auto tn = new IR::Type_Name(ht->name.srcInfo, path);
@@ -264,8 +274,7 @@ void ProgramStructure::createExterns() {
         if (auto et = ExternConverter::cvtExternType(this, it.first, it.second)) {
             if (et != it.first)
                 extern_remap[it.first] = et;
-            if (et != declarations->getDeclaration(et->name))
-                declarations->push_back(et); } }
+            declarations->push_back(et); } }
 }
 
 const IR::Expression* ProgramStructure::paramReference(const IR::Parameter* param) {
@@ -304,7 +313,11 @@ const IR::Statement* ProgramStructure::convertParserStatement(const IR::Expressi
             auto dest = conv.convert(primitive->operands.at(0));
             auto destType = dest->type;
             CHECK_NULL(destType);
-            BUG_CHECK(destType->is<IR::Type_Header>(), "%1%: expected a header", destType);
+            if (!destType->is<IR::Type_Header>()) {
+                ::error(ErrorType::ERR_INVALID, "argument. Expected a header not %2%",
+                        primitive, destType->toString());
+                return nullptr;
+            }
             auto finalDestType = ::get(
                 finalHeaderType, destType->to<IR::Type_Header>()->externalName());
             BUG_CHECK(finalDestType != nullptr, "%1%: could not find final type",
@@ -318,9 +331,8 @@ const IR::Statement* ProgramStructure::convertParserStatement(const IR::Expressi
             conv.replaceNextWithLast = true;
             this->latest = conv.convert(primitive->operands.at(0));
             conv.replaceNextWithLast = false;
-            const IR::Expression* method = new IR::Member(
-                paramReference(parserPacketIn),
-                p4lib.packetIn.extract.Id());
+            const IR::Expression* method = new IR::Member(paramReference(parserPacketIn),
+                    p4lib.packetIn.extract.Id());
             auto result = new IR::MethodCallStatement(
                 expr->srcInfo, method, { new IR::Argument(dest) });
 
@@ -413,7 +425,7 @@ const IR::ParserState* ProgramStructure::convertParser(const IR::V1Parser* parse
     IR::IndexedVector<IR::StatOrDecl> components;
     for (auto e : parser->stmts) {
         auto stmt = convertParserStatement(e);
-        components.push_back(stmt);
+        if (stmt) components.push_back(stmt);
     }
     const IR::Expression* select = nullptr;
     if (parser->select != nullptr) {
@@ -464,8 +476,9 @@ const IR::ParserState* ProgramStructure::convertParser(const IR::V1Parser* parse
                         return nullptr;
                     }
                 } else {
-                    ::warning("parser_value_set has no @parser_value_set_size annotation");
-                    ::warning("using default size 4");
+                    ::warning(ErrorType::WARN_MISSING,
+                              "%1%: parser_value_set has no @parser_value_set_size annotation."
+                              "Using default size 4.", c);
                     sizeConstant = new IR::Constant(4);
                 }
                 auto annos = addGlobalNameAnnotation(value_set->name, value_set->annotations);
@@ -512,21 +525,21 @@ void ProgramStructure::createParser() {
     parserHeadersOut = new IR::Parameter(v1model.parser.headersParam.Id(),
                                          IR::Direction::Out, headtype);
     paramList->push_back(parserHeadersOut);
-    conversionContext.header = paramReference(parserHeadersOut);
+    conversionContext->header = paramReference(parserHeadersOut);
 
     auto metapath = new IR::Path(v1model.metadataType.Id());
     auto metatype = new IR::Type_Name(metapath);
     auto meta = new IR::Parameter(v1model.parser.metadataParam.Id(),
                                   IR::Direction::InOut, metatype);
     paramList->push_back(meta);
-    conversionContext.userMetadata = paramReference(meta);
+    conversionContext->userMetadata = paramReference(meta);
 
     auto stdMetaPath = new IR::Path(v1model.standardMetadataType.Id());
     auto stdMetaType = new IR::Type_Name(stdMetaPath);
     auto stdmeta = new IR::Parameter(v1model.ingress.standardMetadataParam.Id(),
                                      IR::Direction::InOut, stdMetaType);
     paramList->push_back(stdmeta);
-    conversionContext.standardMetadata = paramReference(stdmeta);
+    conversionContext->standardMetadata = paramReference(stdmeta);
 
     auto type = new IR::Type_Parser(v1model.parser.Id(), new IR::TypeParameters(), paramList);
     IR::IndexedVector<IR::Declaration> stateful;
@@ -542,7 +555,7 @@ void ProgramStructure::createParser() {
         ::error("No parsers specified");
     auto result = new IR::P4Parser(v1model.parser.Id(), type, stateful, states);
     declarations->push_back(result);
-    conversionContext.clear();
+    conversionContext->clear();
 
     if (ingressReference.name.isNullOrEmpty())
         ::error("No transition from a parser to ingress pipeline found");
@@ -578,6 +591,8 @@ void ProgramStructure::include(cstring filename, cstring ppoptions) {
 void ProgramStructure::loadModel() {
     // This includes in turn core.p4
     include("v1model.p4");
+
+    systemHeaderTypes.insert(v1model.standardMetadataType.name);
 }
 
 namespace {
@@ -587,8 +602,12 @@ class HeaderRepresentation {
  private:
     const IR::Expression* hdrsParam;  // reference to headers parameter in deparser
     std::map<cstring, const IR::Expression*> header;
+    /// This is for parsers that have no extracts
     std::map<cstring, const IR::Expression*> fakeHeader;
+    /// One expression for each constant stack index
     std::map<const IR::Expression*, std::map<int, const IR::Expression*>> stackElement;
+    /// One expression for each each stack[next]
+    std::map<const IR::Expression*, const IR::Expression*> stackNextElement;
 
  public:
     explicit HeaderRepresentation(const IR::Expression* hdrsParam) :
@@ -605,9 +624,16 @@ class HeaderRepresentation {
         } else if (expression->is<IR::HeaderStackItemRef>()) {
             auto hsir = expression->to<IR::HeaderStackItemRef>();
             auto hdr = getHeader(hsir->base_);
-            if (hsir->index_->is<IR::PathExpression>())
-                // This is most certainly 'next'.
-                return hdr;
+            if (auto pe = hsir->index_->to<IR::PathExpression>()) {
+                if (pe->path->name.name == "next") {
+                    if (stackNextElement.find(hdr) == stackNextElement.end())
+                        stackNextElement[hdr] = new IR::Member(hdr, IR::ID("next"));
+                    return stackNextElement[hdr];
+                } else {
+                    ::error("%1%: Illegal extract stack expression", pe);
+                    return hdr;
+                }
+            }
             BUG_CHECK(hsir->index_->is<IR::Constant>(), "%1%: expected a constant", hsir->index_);
             int index = hsir->index_->to<IR::Constant>()->asInt();
             if (stackElement.find(hdr) != stackElement.end()) {
@@ -628,11 +654,16 @@ class HeaderRepresentation {
 };
 }  // namespace
 
-void ProgramStructure::createDeparser() {
-    auto headpath = new IR::Path(v1model.headersType.Id());
+void ProgramStructure::createDeparserInternal(IR::ID hdrType,
+        IR::ID hdrParam, IR::ID pktParam, IR::ID deparserId,
+        std::vector<IR::Parameter*> extraParams = {},
+        IR::Direction hdrDirection = IR::Direction::In,
+        IR::IndexedVector<IR::Declaration> controlLocals = {},
+        std::function<IR::BlockStatement*(IR::BlockStatement*)> fn =
+        [](IR::BlockStatement* b){ return b; }) {
+    auto headpath = new IR::Path(hdrType);
     auto headtype = new IR::Type_Name(headpath);
-    auto headers = new IR::Parameter(v1model.deparser.headersParam.Id(),
-                                     IR::Direction::In, headtype);
+    auto headers = new IR::Parameter(hdrParam, hdrDirection, headtype);
     auto hdrsParam = paramReference(headers);
     HeaderRepresentation hr(hdrsParam);
 
@@ -646,8 +677,11 @@ void ProgramStructure::createDeparser() {
         } else {
             for (auto e : extracts[caller]) {
                 auto h = hr.getHeader(e);
-                if (lastExtract != nullptr)
-                    headerOrder.calls(lastExtract, h);
+                if (lastExtract != nullptr) {
+                    if (!lastExtract->is<IR::Member>() || lastExtract != h)
+                        // Do not add self-edges between h[next] and h[next]
+                        headerOrder.calls(lastExtract, h);
+                }
                 lastExtract = h;
             }
         }
@@ -660,7 +694,12 @@ void ProgramStructure::createDeparser() {
                 auto h = hr.getHeader(e);
                 firstExtract = h;
             }
-            headerOrder.calls(lastExtract, firstExtract);
+            if (!lastExtract->is<IR::Member>() || lastExtract != firstExtract)
+                // Do not add self-edges between h[next] and h[next]
+                // TODO: this is not 100% precise, since it ignores
+                // edges h[next]->h[next] that go through other
+                // headers.  We will still get warnings for these cases.
+                headerOrder.calls(lastExtract, firstExtract);
         }
     }
 
@@ -677,18 +716,22 @@ void ProgramStructure::createDeparser() {
     std::vector<const IR::Expression*> sortedHeaders;
     bool loop = headerOrder.sccSort(startHeader, sortedHeaders);
     if (loop)
-        ::warning("The order of headers in deparser is not uniquely determined by parser!");
+        ::warning(ErrorType::WARN_ORDERING,
+                  "%1%: the order of headers in deparser is not uniquely determined by parser!",
+                  startHeader);
 
     auto params = new IR::ParameterList;
     auto poutpath = new IR::Path(p4lib.packetOut.Id());
     auto pouttype = new IR::Type_Name(poutpath);
-    auto packetOut = new IR::Parameter(v1model.deparser.packetParam.Id(),
-                                       IR::Direction::None, pouttype);
+    auto packetOut = new IR::Parameter(pktParam, IR::Direction::None, pouttype);
     params->push_back(packetOut);
     params->push_back(headers);
-    conversionContext.header = paramReference(headers);
+    conversionContext->header = paramReference(headers);
 
-    auto type = new IR::Type_Control(v1model.deparser.Id(), params);
+    for (auto p : extraParams)
+        params->push_back(p);
+
+    auto type = new IR::Type_Control(deparserId, params);
 
     ExpressionConverter conv(this);
 
@@ -698,6 +741,11 @@ void ProgramStructure::createDeparser() {
         if (exp->is<IR::StringLiteral>())
             // a "fake" header
             continue;
+        if (auto mem = exp->to<IR::Member>())
+            if (mem->expr->is<IR::Member>())
+                // This is a 'hdr.h.next'; use hdr.h instead
+                exp = mem->expr;
+
         auto args = new IR::Vector<IR::Argument>();
         args->push_back(new IR::Argument(exp));
         const IR::Expression* method = new IR::Member(
@@ -707,8 +755,19 @@ void ProgramStructure::createDeparser() {
         auto stat = new IR::MethodCallStatement(mce);
         body->push_back(stat);
     }
-    deparser = new IR::P4Control(v1model.deparser.Id(), type, body);
+
+    // post-processing generated deparser statements
+    body = fn(body);
+
+    deparser = new IR::P4Control(deparserId, type, controlLocals, body);
     declarations->push_back(deparser);
+}
+
+void ProgramStructure::createDeparser() {
+    createDeparserInternal(v1model.headersType.Id(),
+                           v1model.deparser.headersParam.Id(),
+                           v1model.deparser.packetParam.Id(),
+                           v1model.deparser.Id());
 }
 
 const IR::Declaration_Instance*
@@ -929,12 +988,12 @@ const IR::Expression* ProgramStructure::convertHashAlgorithm(
         result = v1model.algorithm.random.Id();
     } else if (algorithm == "identity") {
         result = v1model.algorithm.identity.Id();
-    } else if (algorithm == "csum16") {
+    } else if (algorithm == "csum16" || algorithm == "csum16_udp") {
         result = v1model.algorithm.csum16.Id();
     } else if (algorithm == "xor16") {
         result = v1model.algorithm.xor16.Id();
     } else {
-        ::warning("%1%: unexpected algorithm", algorithm);
+        ::warning(ErrorType::WARN_UNSUPPORTED, "%1%: unexpected algorithm", algorithm);
         result = algorithm;
     }
     auto pe = new IR::TypeNameExpression(v1model.algorithm.Id());
@@ -946,7 +1005,8 @@ const IR::Expression* ProgramStructure::convertHashAlgorithms(const IR::NameList
     if (!algorithm || algorithm->names.empty()) return nullptr;
     if (algorithm->names.size() > 1) {
 #if 1
-        ::warning("%s: Multiple algorithms in a field list not supported in P4_16 -- using "
+        ::warning(ErrorType::WARN_UNSUPPORTED,
+                  "%s: Multiple algorithms in a field list not supported in P4_16 -- using "
                   "only the first", algorithm->names[0].srcInfo);
 #else
         auto rv = new IR::ListExpression({});
@@ -1254,13 +1314,24 @@ CONVERT_PRIMITIVE(add_to_field) {
     auto left = conv.convert(primitive->operands.at(0));
     auto left2 = conv.convert(primitive->operands.at(0));
     // convert twice, so we have different expression trees on RHS and LHS
-    auto right = conv.convert(primitive->operands.at(1));
+    auto right = primitive->operands.at(1);
     bool isSaturated = isSaturatedField(left) || isSaturatedField(right);
     IR::Operation_Binary *op = nullptr;
-    if (isSaturated)
-        op = new IR::AddSat(primitive->srcInfo, left, right);
-    else
-        op = new IR::Add(primitive->srcInfo, left, right);
+    if (auto k = primitive->operands.at(1)->to<IR::Constant>()) {
+        if (k->value < 0 && !k->type->to<IR::Type::Bits>()->isSigned) {
+            // adding a negative value to an unsigned field -- want to turn this into a
+            // subtract to avoid the warning about 'negative value with unsigned type'
+            right = new IR::Constant(k->srcInfo, k->type, -k->value);
+            if (isSaturated)
+                op = new IR::SubSat(primitive->srcInfo, left, right);
+            else
+                op = new IR::Sub(primitive->srcInfo, left, right); } }
+    if (!op) {
+        right = conv.convert(right);
+        if (isSaturated)
+            op = new IR::AddSat(primitive->srcInfo, left, right);
+        else
+            op = new IR::Add(primitive->srcInfo, left, right); }
     LOG3("add_to_field: isSaturated " << isSaturated << ", op: " << op);
     return structure->assign(primitive->srcInfo, left2, op, primitive->operands.at(0)->type);
 }
@@ -1308,12 +1379,14 @@ CONVERT_PRIMITIVE(copy_header) {
 
 CONVERT_PRIMITIVE(drop) {
     return new IR::MethodCallStatement(
-        primitive->srcInfo, structure->v1model.drop.Id(), {});
+        primitive->srcInfo, structure->v1model.drop.Id(),
+        { new IR::Argument(structure->conversionContext->standardMetadata->clone()) });
 }
 
 CONVERT_PRIMITIVE(mark_for_drop) {
     return new IR::MethodCallStatement(
-        primitive->srcInfo, structure->v1model.drop.Id(), {});
+        primitive->srcInfo, structure->v1model.drop.Id(),
+        { new IR::Argument(structure->conversionContext->standardMetadata->clone()) });
 }
 
 static const IR::Constant *push_pop_size(ExpressionConverter &conv, const IR::Primitive *prim) {
@@ -1500,6 +1573,7 @@ CONVERT_PRIMITIVE(resubmit) {
 }
 
 CONVERT_PRIMITIVE(execute_meter) {
+    LOG3("convert execute meter" << primitive);
     ExpressionConverter conv(structure);
     OPS_CK(primitive, 3);
     auto ref = primitive->operands.at(0);
@@ -1512,7 +1586,8 @@ CONVERT_PRIMITIVE(execute_meter) {
         ::error("Expected a meter reference %1%", ref);
         return nullptr; }
     if (!meter->implementation.name.isNullOrEmpty())
-        ::warning("Ignoring `implementation' field of meter %1%", meter);
+        ::warning(ErrorType::WARN_IGNORE_PROPERTY, "Ignoring `implementation' field of meter %1%",
+                  meter);
     auto newname = structure->meters.get(meter);
     auto meterref = new IR::PathExpression(newname);
     auto methodName = structure->v1model.meter.executeMeter.Id();
@@ -1699,6 +1774,35 @@ CONVERT_PRIMITIVE(funnel_shift_right) {
     return structure->assign(primitive->srcInfo, dest, src, primitive->operands.at(0)->type);
 }
 
+const IR::Statement*
+ProgramStructure::convertMeterCall(const IR::Meter* meterToAccess) {
+    ExpressionConverter conv(this);
+    // add a writeback to the meter field
+    auto decl = get(meterMap, meterToAccess);
+    CHECK_NULL(decl);
+    auto extObj = new IR::PathExpression(decl->name);
+    auto method = new IR::Member(extObj, v1model.directMeter.read.Id());
+    auto args = new IR::Vector<IR::Argument>();
+    auto arg = conv.convert(meterToAccess->result);
+    if (arg != nullptr)
+        args->push_back(new IR::Argument(arg));
+    auto mc = new IR::MethodCallExpression(method, args);
+    auto stat = new IR::MethodCallStatement(mc->srcInfo, mc);
+    return stat;
+}
+
+const IR::Statement*
+ProgramStructure::convertCounterCall(cstring counterToAccess) {
+    ExpressionConverter conv(this);
+    auto decl = get(counterMap, counterToAccess);
+    CHECK_NULL(decl);
+    auto extObj = new IR::PathExpression(decl->name);
+    auto method = new IR::Member(extObj, v1model.directCounter.count.Id());
+    auto mc = new IR::MethodCallExpression(method, new IR::Vector<IR::Argument>());
+    auto stat = new IR::MethodCallStatement(mc->srcInfo, mc);
+    return stat;
+}
+
 const IR::P4Action*
 ProgramStructure::convertAction(const IR::ActionFunction* action, cstring newName,
                                 const IR::Meter* meterToAccess,
@@ -1715,7 +1819,8 @@ ProgramStructure::convertAction(const IR::ActionFunction* action, cstring newNam
             direction = p->write ? IR::Direction::InOut : IR::Direction::None;
         auto type = p->type;
         if (type == IR::Type_Unknown::get()) {
-            ::warning("Could not infer type for %1%, using bit<8>", p);
+            ::warning(ErrorType::WARN_TYPE_INFERENCE,
+                      "Could not infer type for %1%, using bit<8>", p);
             type = IR::Type_Bits::get(8);
         } else if (type->is<IR::Type_StructLike>()) {
             auto path = new IR::Path(type->to<IR::Type_StructLike>()->name);
@@ -1726,28 +1831,11 @@ ProgramStructure::convertAction(const IR::ActionFunction* action, cstring newNam
         params->push_back(param); }
 
     if (meterToAccess != nullptr) {
-        ExpressionConverter conv(this);
-        // add a writeback to the meter field
-        auto decl = get(meterMap, meterToAccess);
-        CHECK_NULL(decl);
-        auto extObj = new IR::PathExpression(decl->name);
-        auto method = new IR::Member(extObj, v1model.directMeter.read.Id());
-        auto args = new IR::Vector<IR::Argument>();
-        auto arg = conv.convert(meterToAccess->result);
-        if (arg != nullptr)
-            args->push_back(new IR::Argument(arg));
-        auto mc = new IR::MethodCallExpression(method, args);
-        auto stat = new IR::MethodCallStatement(mc->srcInfo, mc);
+        auto stat = convertMeterCall(meterToAccess);
         body->push_back(stat); }
 
     if (counterToAccess != nullptr) {
-        ExpressionConverter conv(this);
-        auto decl = get(counterMap, counterToAccess);
-        CHECK_NULL(decl);
-        auto extObj = new IR::PathExpression(decl->name);
-        auto method = new IR::Member(extObj, v1model.directCounter.count.Id());
-        auto mc = new IR::MethodCallExpression(method, new IR::Vector<IR::Argument>());
-        auto stat = new IR::MethodCallStatement(mc->srcInfo, mc);
+        auto stat = convertCounterCall(counterToAccess);
         body->push_back(stat); }
 
     for (auto p : action->action) {
@@ -1770,27 +1858,27 @@ const IR::Type_Control* ProgramStructure::controlType(IR::ID name) {
     auto headers = new IR::Parameter(v1model.ingress.headersParam.Id(),
                                      IR::Direction::InOut, headtype);
     params->push_back(headers);
-    conversionContext.header = paramReference(headers);
+    conversionContext->header = paramReference(headers);
 
     auto metapath = new IR::Path(v1model.metadataType.Id());
     auto metatype = new IR::Type_Name(metapath);
     auto meta = new IR::Parameter(v1model.ingress.metadataParam.Id(),
                                   IR::Direction::InOut, metatype);
     params->push_back(meta);
-    conversionContext.userMetadata = paramReference(meta);
+    conversionContext->userMetadata = paramReference(meta);
 
     auto stdMetaPath = new IR::Path(v1model.standardMetadataType.Id());
     auto stdMetaType = new IR::Type_Name(stdMetaPath);
     auto stdmeta = new IR::Parameter(v1model.ingress.standardMetadataParam.Id(),
                                      IR::Direction::InOut, stdMetaType);
     params->push_back(stdmeta);
-    conversionContext.standardMetadata = paramReference(stdmeta);
+    conversionContext->standardMetadata = paramReference(stdmeta);
 
     auto type = new IR::Type_Control(name, new IR::TypeParameters(), params);
     return type;
 }
 
-const IR::Expression* ProgramStructure::counterType(const IR::CounterOrMeter* cm) const {
+const IR::Expression* ProgramStructure::counterType(const IR::CounterOrMeter* cm) {
     IR::ID kind;
     IR::ID enumName;
     if (cm->is<IR::Counter>()) {
@@ -1833,7 +1921,8 @@ ProgramStructure::convert(const IR::Register* reg, cstring newName,
             newName = reg->layout;
         regElementType = new IR::Type_Name(new IR::Path(newName));
     } else {
-        ::warning("%1%: Register width unspecified; using %2%", reg, defaultRegisterWidth);
+        ::warning(ErrorType::WARN_MISSING,
+                  "%1%: Register width unspecified; using %2%", reg, defaultRegisterWidth);
         regElementType = IR::Type_Bits::get(defaultRegisterWidth);
     }
 
@@ -1933,12 +2022,22 @@ ProgramStructure::convertDirectCounter(const IR::Counter* c, cstring newName) {
     return decl;
 }
 
+IR::Vector<IR::Argument>*
+ProgramStructure::createApplyArguments(cstring /* name unused */) {
+    auto args = new IR::Vector<IR::Argument>();
+    args->push_back(new IR::Argument(conversionContext->header->clone()));
+    args->push_back(new IR::Argument(conversionContext->userMetadata->clone()));
+    args->push_back(new IR::Argument(conversionContext->standardMetadata->clone()));
+    return args;
+}
+
 const IR::P4Control*
 ProgramStructure::convertControl(const IR::V1Control* control, cstring newName) {
+    LOG3("Converting frontend " << control->name);
     IR::ID name = newName;
     auto type = controlType(name);
     std::vector<cstring> actionsInTables;
-    IR::IndexedVector<IR::Declaration> stateful;
+    IR::IndexedVector<IR::Declaration> locals;
 
     std::vector<const IR::V1Table*> usedTables;
     tablesReferred(control, usedTables);
@@ -1974,7 +2073,7 @@ ProgramStructure::convertControl(const IR::V1Control* control, cstring newName) 
             if (std::find(usedTables.begin(), usedTables.end(), tbl) != usedTables.end()) {
                 auto extcounter = convertDirectCounter(c.first, c.second);
                 if (extcounter != nullptr) {
-                    stateful.push_back(extcounter);
+                    locals.push_back(extcounter);
                     directCounters.emplace(c.first->table.name, c.first->name);
                     counterMap.emplace(c.first->name, extcounter);
                 }
@@ -1983,8 +2082,10 @@ ProgramStructure::convertControl(const IR::V1Control* control, cstring newName) 
     }
     for (auto c : countersToDo) {
         auto ctr = counters.get(c);
-        auto counter = convert(ctr, counters.get(ctr));
-        stateful.push_back(counter);
+        if (!globalInstances.count(ctr)) {
+            auto counter = convert(ctr, counters.get(ctr));
+            declarations->push_back(counter);
+            globalInstances[ctr] = counter; }
     }
 
     for (auto m : meters) {
@@ -2002,7 +2103,7 @@ ProgramStructure::convertControl(const IR::V1Control* control, cstring newName) 
                 auto meter = meters.get(m.second);
                 auto extmeter = convertDirectMeter(meter, m.second);
                 if (extmeter != nullptr) {
-                    stateful.push_back(extmeter);
+                    locals.push_back(extmeter);
                     directMeters.emplace(m.first->table.name, meter);
                     meterMap.emplace(meter, extmeter);
                 }
@@ -2023,23 +2124,26 @@ ProgramStructure::convertControl(const IR::V1Control* control, cstring newName) 
     }
     for (auto c : metersToDo) {
         auto mtr = meters.get(c);
-        auto meter = convert(mtr, meters.get(mtr));
-        stateful.push_back(meter);
+        if (!globalInstances.count(mtr)) {
+            auto meter = convert(mtr, meters.get(mtr));
+            declarations->push_back(meter);
+            globalInstances[mtr] = meter; }
     }
 
     for (auto c : registersToDo) {
         auto reg = registers.get(c);
-        auto r = convert(reg, registers.get(reg));
-        if (!declarations->getDeclaration(r->name)) {
+        if (!globalInstances.count(reg)) {
+            auto r = convert(reg, registers.get(reg));
             declarations->push_back(r);
-        }
+            globalInstances[reg] = r; }
     }
 
     for (auto c : externsToDo) {
         auto ext = externs.get(c);
         if (!ExternConverter::cvtAsGlobal(this, ext)) {
-            ext = ExternConverter::cvtExternInstance(this, ext, externs.get(ext), &stateful);
-            stateful.push_back(ext);
+            IR::IndexedVector<IR::Declaration> tmp;
+            ext = ExternConverter::cvtExternInstance(this, ext, externs.get(ext), &locals);
+            locals.push_back(ext);
         }
     }
 
@@ -2050,7 +2154,7 @@ ProgramStructure::convertControl(const IR::V1Control* control, cstring newName) 
             return nullptr;
         }
         auto action = convertAction(act, actions.get(act), nullptr, nullptr);
-        stateful.push_back(action);
+        locals.push_back(action);
     }
 
     std::set<cstring> tablesDone;
@@ -2058,9 +2162,9 @@ ProgramStructure::convertControl(const IR::V1Control* control, cstring newName) 
     for (auto t : usedTables) {
         if (tablesDone.find(t->name.name) != tablesDone.end())
             continue;
-        auto tbl = convertTable(t, tables.get(t), stateful, instanceNames);
+        auto tbl = convertTable(t, tables.get(t), locals, instanceNames);
         if (tbl != nullptr)
-            stateful.push_back(tbl);
+            locals.push_back(tbl);
         tablesDone.emplace(t->name.name);
     }
 
@@ -2076,7 +2180,7 @@ ProgramStructure::convertControl(const IR::V1Control* control, cstring newName) 
             auto annos = addGlobalNameAnnotation(cc);
             auto decl = new IR::Declaration_Instance(
                 IR::ID(iname), annos, type, new IR::Vector<IR::Argument>(), nullptr);
-            stateful.push_back(decl);
+            locals.push_back(decl);
         }
     }
 
@@ -2087,8 +2191,8 @@ ProgramStructure::convertControl(const IR::V1Control* control, cstring newName) 
         body->push_back(s);
     }
 
-    auto result = new IR::P4Control(name, type, stateful, body);
-    conversionContext.clear();
+    auto result = new IR::P4Control(name, type, locals, body);
+    conversionContext->clear();
     return result;
 }
 
@@ -2237,7 +2341,7 @@ void ProgramStructure::createChecksumVerifications() {
     auto headers = new IR::Parameter(v1model.verify.headersParam.Id(),
                                      IR::Direction::InOut, headtype);
     params->push_back(headers);
-    conversionContext.header = paramReference(headers);
+    conversionContext->header = paramReference(headers);
 
     auto metapath = new IR::Path(v1model.metadataType.Id());
     auto metatype = new IR::Type_Name(metapath);
@@ -2246,8 +2350,8 @@ void ProgramStructure::createChecksumVerifications() {
     auto body = new IR::BlockStatement();
 
     params->push_back(meta);
-    conversionContext.userMetadata = paramReference(meta);
-    conversionContext.standardMetadata = nullptr;
+    conversionContext->userMetadata = paramReference(meta);
+    conversionContext->standardMetadata = nullptr;
     auto type = new IR::Type_Control(v1model.verify.Id(), params);
 
     for (auto cf : calculated_fields) {
@@ -2291,7 +2395,7 @@ void ProgramStructure::createChecksumVerifications() {
     verifyChecksums = new IR::P4Control(
         v1model.verify.Id(), type, *new IR::IndexedVector<IR::Declaration>(), body);
     declarations->push_back(verifyChecksums);
-    conversionContext.clear();
+    conversionContext->clear();
 }
 
 void ProgramStructure::createChecksumUpdates() {
@@ -2302,16 +2406,16 @@ void ProgramStructure::createChecksumUpdates() {
     auto headers = new IR::Parameter(v1model.compute.headersParam.Id(),
                                      IR::Direction::InOut, headtype);
     params->push_back(headers);
-    conversionContext.header = paramReference(headers);
+    conversionContext->header = paramReference(headers);
 
     auto metapath = new IR::Path(v1model.metadataType.Id());
     auto metatype = new IR::Type_Name(metapath);
     auto meta = new IR::Parameter(v1model.parser.metadataParam.Id(),
                                   IR::Direction::InOut, metatype);
     params->push_back(meta);
-    conversionContext.userMetadata = paramReference(meta);
+    conversionContext->userMetadata = paramReference(meta);
 
-    conversionContext.standardMetadata = nullptr;
+    conversionContext->standardMetadata = nullptr;
 
     auto type = new IR::Type_Control(v1model.compute.Id(), params);
     auto body = new IR::BlockStatement;
@@ -2341,7 +2445,14 @@ void ProgramStructure::createChecksumUpdates() {
             args->push_back(new IR::Argument(le));
             args->push_back(new IR::Argument(dest));
             args->push_back(new IR::Argument(algo));
-            auto mc = new IR::MethodCallStatement(new IR::MethodCallExpression(method, args));
+            auto methodCallExpression = new IR::MethodCallExpression(method, args);
+            IR::Annotation* zeros_as_ones_annot  = nullptr;
+            if (flc->algorithm->names[0] == "csum16_udp") {
+                zeros_as_ones_annot = new IR::Annotation(IR::ID("zeros_as_ones"),
+                              {methodCallExpression});
+                body->annotations = body->annotations->add(zeros_as_ones_annot);
+            }
+            auto mc = new IR::MethodCallStatement(methodCallExpression);
             body->push_back(mc);
 
             for (auto annot : cf->annotations->annotations)
@@ -2356,7 +2467,7 @@ void ProgramStructure::createChecksumUpdates() {
     updateChecksums = new IR::P4Control(
         v1model.compute.Id(), type, IR::IndexedVector<IR::Declaration>(), body);
     declarations->push_back(updateChecksums);
-    conversionContext.clear();
+    conversionContext->clear();
 }
 
 const IR::P4Program* ProgramStructure::create(Util::SourceInfo info) {
@@ -2375,8 +2486,8 @@ const IR::P4Program* ProgramStructure::create(Util::SourceInfo info) {
     createMain();
     if (::errorCount())
         return nullptr;
-    auto result = new IR::P4Program(info, *declarations);
-    return result;
+    auto program = new IR::P4Program(info, *declarations);
+    return program;
 }
 
 void

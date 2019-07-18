@@ -25,6 +25,7 @@ limitations under the License.
 #include "helpers.h"
 #include "JsonObjects.h"
 #include "programStructure.h"
+#include "backends/bmv2/common/options.h"
 
 namespace BMV2 {
 
@@ -44,6 +45,7 @@ class HeaderConverter : public Inspector {
     Util::JsonArray* pushNewArray(Util::JsonArray* parent);
     void addHeaderType(const IR::Type_StructLike* st);
     void addHeaderField(const cstring& header, const cstring& name, int size, bool is_signed);
+    Util::JsonArray* addHeaderUnionFields(cstring hdrName, const IR::Type_HeaderUnion* type);
 
  public:
     void addTypesAndInstances(const IR::Type_StructLike* type, bool meta);

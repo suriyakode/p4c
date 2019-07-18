@@ -14,9 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-#include "frontends/p4/fromv1.0/v1model.h"
 #include "lower.h"
+#include "frontends/p4/coreLibrary.h"
 #include "frontends/p4/methodInstance.h"
+#include "frontends/p4/fromv1.0/v1model.h"
 #include "lib/gmputil.h"
 
 namespace BMV2 {
@@ -32,12 +33,14 @@ const IR::Expression* LowerExpressions::shift(const IR::Operation_Binary* expres
         auto cst = rhs->to<IR::Constant>();
         mpz_class maxShift = Util::shift_left(1, LowerExpressions::maxShiftWidth);
         if (cst->value > maxShift)
-            ::error("%1%: shift amount limited to %2% on this target", expression, maxShift);
+            ::error(ErrorType::ERR_OVERLIMIT, "%1%: shift amount limited to %2% on this target",
+                    expression, maxShift);
     } else {
         BUG_CHECK(rhstype->is<IR::Type_Bits>(), "%1%: expected a bit<> type", rhstype);
         auto bs = rhstype->to<IR::Type_Bits>();
         if (bs->size > LowerExpressions::maxShiftWidth)
-            ::error("%1%: shift amount limited to %2% bits on this target",
+            ::error(ErrorType::ERR_OVERLIMIT,
+                    "%1%: shift amount limited to %2% bits on this target",
                     expression, LowerExpressions::maxShiftWidth);
     }
     auto ltype = typeMap->getType(getOriginal(), true);
@@ -61,7 +64,7 @@ const IR::Node* LowerExpressions::postorder(IR::Cast* expression) {
     auto srcType = typeMap->getType(expression->expr, true);
     if (destType->is<IR::Type_Boolean>() && srcType->is<IR::Type_Bits>()) {
         auto zero = new IR::Constant(srcType, 0);
-        auto cmp = new IR::Equ(expression->srcInfo, expression->expr, zero);
+        auto cmp = new IR::Neq(expression->srcInfo, expression->expr, zero);
         typeMap->setType(cmp, destType);
         LOG3("Replaced " << expression << " with " << cmp);
         return cmp;
@@ -89,17 +92,26 @@ const IR::Node* LowerExpressions::postorder(IR::Slice* expression) {
     // This is in a RHS expression a[m:l]  ->  (cast)(a >> l)
     int h = expression->getH();
     int l = expression->getL();
+    auto e0type = typeMap->getType(expression->e0, true);
+    BUG_CHECK(e0type->is<IR::Type_Bits>(), "%1%: expected a bit<> type", e0type);
     const IR::Expression* expr;
     if (l != 0) {
         expr = new IR::Shr(expression->e0->srcInfo, expression->e0, new IR::Constant(l));
-        auto e0type = typeMap->getType(expression->e0, true);
         typeMap->setType(expr, e0type);
     } else {
         expr = expression->e0;
     }
-    auto type = IR::Type_Bits::get(h - l + 1);
+
+    // Narrowing cast.
+    auto type = IR::Type_Bits::get(h - l + 1, e0type->to<IR::Type_Bits>()->isSigned);
     auto result = new IR::Cast(expression->srcInfo, type, expr);
     typeMap->setType(result, type);
+
+    // Signedness conversion.
+    type = IR::Type_Bits::get(h - l + 1, false);
+    result = new IR::Cast(expression->srcInfo, type, result);
+    typeMap->setType(result, type);
+
     LOG3("Replaced " << expression << " with " << result);
     return result;
 }
@@ -199,7 +211,7 @@ RemoveComplexExpressions::simplifyExpression(const IR::Expression* expression, b
         auto simpl = simplifyExpressions(&si->components);
         if (simpl != &si->components)
             return new IR::StructInitializerExpression(
-                si->srcInfo, si->name, *simpl, si->isHeader);
+                si->srcInfo, si->typeName, si->typeName, *simpl);
         return expression;
     } else {
         ComplexExpression ce;
@@ -289,7 +301,7 @@ RemoveComplexExpressions::postorder(IR::MethodCallExpression* expression) {
             // one knew of this feature, since it was not very clearly
             // documented.
             if (expression->arguments->size() != 2) {
-                ::error("%1% expected 2 arguments", expression);
+                ::error(ErrorType::ERR_EXPECTED, "2 arguments", expression);
                 return expression;
             }
             auto vec = new IR::Vector<IR::Argument>();
@@ -304,7 +316,7 @@ RemoveComplexExpressions::postorder(IR::MethodCallExpression* expression) {
             } else if (auto si = arg1->to<IR::StructInitializerExpression>()) {
                 auto list = simplifyExpressions(&si->components);
                 arg1 = new IR::StructInitializerExpression(
-                    si->srcInfo, si->name, *list, si->isHeader);
+                    si->srcInfo, si->typeName, si->typeName, *list);
                 vec->push_back(new IR::Argument(arg1));
             } else {
                 auto tmp = new IR::Argument(
@@ -324,13 +336,38 @@ RemoveComplexExpressions::postorder(IR::MethodCallExpression* expression) {
 }
 
 const IR::Node*
-RemoveComplexExpressions::postorder(IR::Statement* statement) {
+RemoveComplexExpressions::simpleStatement(IR::Statement* statement) {
     if (assignments.empty())
         return statement;
     auto block = new IR::BlockStatement(assignments);
     block->push_back(statement);
     assignments.clear();
     return block;
+}
+
+const IR::Node*
+RemoveComplexExpressions::postorder(IR::Statement* statement) {
+    return simpleStatement(statement);
+}
+
+const IR::Node*
+RemoveComplexExpressions::postorder(IR::MethodCallStatement* statement) {
+    auto mi = P4::MethodInstance::resolve(statement, refMap, typeMap);
+    if (auto em = mi->to<P4::ExternMethod>()) {
+        if (em->originalExternType->name != P4::P4CoreLibrary::instance.packetIn.name ||
+            em->method->name != P4::P4CoreLibrary::instance.packetIn.lookahead.name)
+            return simpleStatement(statement);
+        auto type = em->actualMethodType->returnType;
+        auto name = refMap->newName("tmp");
+        LOG3("Adding variable for lookahead " << name);
+        auto decl = new IR::Declaration_Variable(IR::ID(name), type->getP4Type());
+        newDecls.push_back(decl);
+        typeMap->setType(decl, typeMap->getTypeType(type, true));
+        auto assign = new IR::AssignmentStatement(
+            statement->srcInfo, new IR::PathExpression(name), statement->methodCall);
+        return simpleStatement(assign);
+    }
+    return simpleStatement(statement);
 }
 
 }  // namespace BMV2

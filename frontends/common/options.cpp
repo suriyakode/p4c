@@ -97,13 +97,25 @@ CompilerOptions::CompilerOptions() : Util::Options(defaultMessage) {
     registerOption("--toJSON", "file",
                    [this](const char* arg) { dumpJsonFile = arg; return true; },
                    "Dump the compiler IR after the midend as JSON in the specified file.");
+    registerOption("--p4runtime-files", "filelist",
+                   [this](const char* arg) { p4RuntimeFiles = arg; return true; },
+                   "Write the P4Runtime control plane API description to the specified\n"
+                   "files (comma-separated list). The format is inferred from the file\n"
+                   "suffix: .txt, .json, .bin");
     registerOption("--p4runtime-file", "file",
                    [this](const char* arg) { p4RuntimeFile = arg; return true; },
-                   "Write a P4Runtime control plane API description to the specified file.");
+                   "Write a P4Runtime control plane API description to the specified file.\n"
+                   "[Deprecated; use '--p4runtime-files' instead].");
     registerOption("--p4runtime-entries-file", "file",
                    [this](const char* arg) { p4RuntimeEntriesFile = arg; return true; },
                    "Write static table entries as a P4Runtime WriteRequest message"
-                   "to the specified file.");
+                   "to the specified file.\n"
+                   "[Deprecated; use '--p4runtime-entries-files' instead].");
+    registerOption("--p4runtime-entries-files", "files",
+                   [this](const char* arg) { p4RuntimeEntriesFiles = arg; return true; },
+                   "Write static table entries as a P4Runtime WriteRequest message\n"
+                   "to the specified files (comma-separated list); the file format is\n"
+                   "inferred from the suffix. Legal suffixes are .json, .txt and .bin");
     registerOption("--p4runtime-format", "{binary,json,text}",
                    [this](const char* arg) {
                        if (!strcmp(arg, "binary")) {
@@ -117,7 +129,8 @@ CompilerOptions::CompilerOptions() : Util::Options(defaultMessage) {
                            return false;
                        }
                        return true; },
-                   "Choose output format for the P4Runtime API description (default is binary).");
+                   "Choose output format for the P4Runtime API description (default is binary).\n"
+                   "[Deprecated; use '--p4runtime-files' instead].");
     registerOption("--Wdisable", "diagnostic",
         [](const char *diagnostic) {
             if (diagnostic) {
@@ -157,6 +170,12 @@ CompilerOptions::CompilerOptions() : Util::Options(defaultMessage) {
         }, "Report an error for a compiler diagnostic, or treat all warnings as "
            "errors if no diagnostic is specified.",
         OptionFlags::OptionalArgument);
+    registerOption("--maxErrorCount", "errorCount",
+                   [](const char *arg) {
+                       auto maxError = strtoul(arg, nullptr, 10);
+                       P4CContext::get().errorReporter().setMaxErrorCount(maxError);
+                       return true; },
+                   "Set the maximum number of errors to display before failing.");
     registerOption("--testJson", nullptr,
                     [this](const char*) { debugJson = true; return true; },
                     "[Compiler debugging] Dump and undump the IR");
@@ -183,6 +202,9 @@ CompilerOptions::CompilerOptions() : Util::Options(defaultMessage) {
                   "  sourceFile:level,...,sourceFile:level\n"
                   "where 'sourceFile' is a compiler source file and\n"
                   "'level' is the verbosity level for LOG messages in that file");
+    registerOption("--ndebug", nullptr,
+                   [this](const char*) { ndebug = true; return true; },
+                  "Compile program in non-debug mode.\n");
 }
 
 void CompilerOptions::setInputFile() {
@@ -220,6 +242,11 @@ static void convertToAbsPath(const char* const relPath, char (&output)[N]) {
 bool setIncludePathIfExists(const char*& includePathOut,
                             const char* possiblePath) {
     struct stat st;
+    char buffer[PATH_MAX];
+    int len;
+    if ((len = readlink(possiblePath, buffer, sizeof(buffer))) > 0) {
+        buffer[len] = 0;
+        possiblePath = buffer; }
     if (!(stat(possiblePath, &st) >= 0 && S_ISDIR(st.st_mode))) return false;
     includePathOut = strdup(possiblePath);
     return true;
@@ -269,9 +296,15 @@ std::vector<const char*>* CompilerOptions::process(int argc, char* const argv[])
 }
 
 void CompilerOptions::validateOptions() const {
-    if (p4RuntimeFile.isNullOrEmpty() && !p4RuntimeEntriesFile.isNullOrEmpty()) {
-        ::warning("When '--p4runtime-entries-file' is used without '--p4runtime-file', "
-                  "it is ignored");
+    if (!p4RuntimeFile.isNullOrEmpty()) {
+        ::warning(ErrorType::WARN_DEPRECATED,
+                  "'--p4runtime-file' and '--p4runtime-format' are deprecated, "
+                  "consider using '--p4runtime-files' instead");
+    }
+    if (!p4RuntimeEntriesFile.isNullOrEmpty()) {
+        ::warning(ErrorType::WARN_DEPRECATED,
+                  "'--p4runtime-entries-file' is deprecated, "
+                  "consider using '--p4runtime-entries-files' instead");
     }
 }
 
@@ -343,14 +376,13 @@ bool CompilerOptions::isv1() const {
     return langVersion == CompilerOptions::FrontendVersion::P4_14;
 }
 
+bool CompilerOptions::enable_intrinsic_metadata_fix() {
+    return true;
+}
+
 void CompilerOptions::dumpPass(const char* manager, unsigned seq, const char* pass,
                                const IR::Node* node) const {
-    // Some pass names are currently C++ class names mangled;
-    // this is a weak attempt at making them more readable.
-    std::string p = pass;
-    size_t last = p.find_last_of("0123456789", strlen(pass) - 3);
-    if (last != strlen(pass))
-        pass = pass + last + 1;
+    if (strncmp(pass, "P4::", 4) == 0) pass += 4;
     cstring name = cstring(manager) + "_" + Util::toString(seq) + "_" + pass;
     if (Log::verbose())
         std::cerr << name << std::endl;
@@ -369,6 +401,7 @@ void CompilerOptions::dumpPass(const char* manager, unsigned seq, const char* pa
                     std::cerr << "Writing program to " << fileName << std::endl;
                 P4::ToP4 toP4(stream, Log::verbose(), file);
                 node->apply(toP4);
+                delete stream;  // close the file
             }
             break;
         }
@@ -383,46 +416,6 @@ DebugHook CompilerOptions::getDebugHook() const {
 
 /* static */ P4CContext& P4CContext::get() {
     return CompileContextStack::top<P4CContext>();
-}
-
-P4CContext::P4CContext()
-    : defaultWarningDiagnosticAction(DiagnosticAction::Warn) { }
-
-DiagnosticAction P4CContext::getDefaultWarningDiagnosticAction() {
-    return defaultWarningDiagnosticAction;
-}
-
-void P4CContext::setDefaultWarningDiagnosticAction(DiagnosticAction action) {
-    defaultWarningDiagnosticAction = action;
-}
-
-DiagnosticAction P4CContext::getDiagnosticAction(cstring diagnostic,
-                                                 DiagnosticAction defaultAction) {
-    auto it = diagnosticActions.find(diagnostic);
-    if (it != diagnosticActions.end()) return it->second;
-    switch (defaultAction) {
-        case DiagnosticAction::Ignore: return defaultAction;
-        case DiagnosticAction::Warn: return getDefaultWarningDiagnosticAction();
-        case DiagnosticAction::Error: return getDefaultErrorDiagnosticAction();
-    }
-    BUG("Invalid default DiagnosticAction");
-}
-
-void P4CContext::setDiagnosticAction(cstring diagnostic, DiagnosticAction action) {
-    if (!isRecognizedDiagnostic(diagnostic))
-        DIAGNOSE_WARN("unknown_diagnostic",
-                      "Unrecognized diagnostic: %1%", diagnostic);
-
-    switch (action) {
-        case DiagnosticAction::Ignore:
-            LOG1("Ignoring diagnostic: " << diagnostic); break;
-        case DiagnosticAction::Warn:
-            LOG1("Reporting warning for diagnostic: " << diagnostic); break;
-        case DiagnosticAction::Error:
-            LOG1("Reporting error for diagnostic: " << diagnostic); break;
-    }
-
-    diagnosticActions[diagnostic] = action;
 }
 
 bool P4CContext::isRecognizedDiagnostic(cstring diagnostic) {

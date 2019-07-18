@@ -185,20 +185,20 @@ class Constant : Literal {
     bool fitsUint64() const { return mpz_sizeinbase(value.get_mpz_t(), 2) < 65; }
     long asLong() const {
         if (!fitsLong())
-            ::error("%1$x: Value too large for long", this);
+            ::error(ErrorType::ERR_OVERLIMIT, "%1$x: Value too large for long", this);
         return value.get_si(); }
     int asInt() const {
         if (!fitsInt())
-            ::error("%1$x: Value too large for int", this);
+            ::error(ErrorType::ERR_OVERLIMIT, "%1$x: Value too large for int", this);
         return value.get_si(); }
     unsigned asUnsigned() const {
         if (!fitsUint())
-            ::error("%1$x: Value too large for unsigned int", this);
+            ::error(ErrorType::ERR_OVERLIMIT, "%1$x: Value too large for unsigned int", this);
         return value.get_ui();
     }
     uint64_t asUint64() const {
         if (!fitsUint64())
-            ::error("%1$x: Value too large for uint64", this);
+            ::error(ErrorType::ERR_OVERLIMIT, "%1$x: Value too large for uint64", this);
         uint64_t res = UINT64_C(0);
         size_t nWords = 0;
         mpz_export(&res, &nWords, /* msb first */0, /* word size */8,
@@ -218,7 +218,7 @@ class Constant : Literal {
     Constant operator-(const Constant &c) const;
     Constant operator-() const;
 #end
-    toString { return Util::toString(&value); }
+    toString { return Util::toString(&value, base); }
     visit_children { v.visit(type, "type"); }
 }
 
@@ -409,12 +409,10 @@ class ListExpression : Expression {
 /// IR representation of an initializer for a struct.
 /// Currently it does not have a direct representation as P4 source.
 class StructInitializerExpression : Expression {
-    /// Name of the struct type that is being intialized.
-    /// May only be known after type checking; so it can be empty.
-    ID name;
+    /// The struct or header type that is being intialized.
+    /// May only be known after type checking; so it can be nullptr.
+    NullOK optional Type_Name typeName;
     inline IndexedVector<NamedExpression> components;
-    /// If true this represents a header.
-    bool isHeader;
     validate { components.check_null(); }
     size_t size() const { return components.size(); }
 }

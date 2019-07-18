@@ -33,7 +33,8 @@ struct fwd_meta_t {
 }
 
 struct meta_t {
-    fwd_meta_t fwd;
+    bit<32> _fwd_l2ptr0;
+    bit<24> _fwd_out_bd1;
 }
 
 struct headers_t {
@@ -56,26 +57,95 @@ parser ParserImpl(packet_in packet, out headers_t hdr, inout meta_t meta, inout 
     }
 }
 
+struct tuple_0 {
+}
+
 control ingress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_t standard_metadata) {
+    standard_metadata_t smeta;
+    standard_metadata_t smeta_1;
     @name(".my_drop") action my_drop() {
-        mark_to_drop();
+        smeta.ingress_port = standard_metadata.ingress_port;
+        smeta.egress_spec = standard_metadata.egress_spec;
+        smeta.egress_port = standard_metadata.egress_port;
+        smeta.instance_type = standard_metadata.instance_type;
+        smeta.packet_length = standard_metadata.packet_length;
+        smeta.enq_timestamp = standard_metadata.enq_timestamp;
+        smeta.enq_qdepth = standard_metadata.enq_qdepth;
+        smeta.deq_timedelta = standard_metadata.deq_timedelta;
+        smeta.deq_qdepth = standard_metadata.deq_qdepth;
+        smeta.ingress_global_timestamp = standard_metadata.ingress_global_timestamp;
+        smeta.egress_global_timestamp = standard_metadata.egress_global_timestamp;
+        smeta.mcast_grp = standard_metadata.mcast_grp;
+        smeta.egress_rid = standard_metadata.egress_rid;
+        smeta.checksum_error = standard_metadata.checksum_error;
+        smeta.parser_error = standard_metadata.parser_error;
+        smeta.priority = standard_metadata.priority;
+        mark_to_drop(smeta);
+        standard_metadata.ingress_port = smeta.ingress_port;
+        standard_metadata.egress_spec = smeta.egress_spec;
+        standard_metadata.egress_port = smeta.egress_port;
+        standard_metadata.instance_type = smeta.instance_type;
+        standard_metadata.packet_length = smeta.packet_length;
+        standard_metadata.enq_timestamp = smeta.enq_timestamp;
+        standard_metadata.enq_qdepth = smeta.enq_qdepth;
+        standard_metadata.deq_timedelta = smeta.deq_timedelta;
+        standard_metadata.deq_qdepth = smeta.deq_qdepth;
+        standard_metadata.ingress_global_timestamp = smeta.ingress_global_timestamp;
+        standard_metadata.egress_global_timestamp = smeta.egress_global_timestamp;
+        standard_metadata.mcast_grp = smeta.mcast_grp;
+        standard_metadata.egress_rid = smeta.egress_rid;
+        standard_metadata.checksum_error = smeta.checksum_error;
+        standard_metadata.parser_error = smeta.parser_error;
+        standard_metadata.priority = smeta.priority;
     }
     @name(".my_drop") action my_drop_0() {
-        mark_to_drop();
+        smeta_1.ingress_port = standard_metadata.ingress_port;
+        smeta_1.egress_spec = standard_metadata.egress_spec;
+        smeta_1.egress_port = standard_metadata.egress_port;
+        smeta_1.instance_type = standard_metadata.instance_type;
+        smeta_1.packet_length = standard_metadata.packet_length;
+        smeta_1.enq_timestamp = standard_metadata.enq_timestamp;
+        smeta_1.enq_qdepth = standard_metadata.enq_qdepth;
+        smeta_1.deq_timedelta = standard_metadata.deq_timedelta;
+        smeta_1.deq_qdepth = standard_metadata.deq_qdepth;
+        smeta_1.ingress_global_timestamp = standard_metadata.ingress_global_timestamp;
+        smeta_1.egress_global_timestamp = standard_metadata.egress_global_timestamp;
+        smeta_1.mcast_grp = standard_metadata.mcast_grp;
+        smeta_1.egress_rid = standard_metadata.egress_rid;
+        smeta_1.checksum_error = standard_metadata.checksum_error;
+        smeta_1.parser_error = standard_metadata.parser_error;
+        smeta_1.priority = standard_metadata.priority;
+        mark_to_drop(smeta_1);
+        standard_metadata.ingress_port = smeta_1.ingress_port;
+        standard_metadata.egress_spec = smeta_1.egress_spec;
+        standard_metadata.egress_port = smeta_1.egress_port;
+        standard_metadata.instance_type = smeta_1.instance_type;
+        standard_metadata.packet_length = smeta_1.packet_length;
+        standard_metadata.enq_timestamp = smeta_1.enq_timestamp;
+        standard_metadata.enq_qdepth = smeta_1.enq_qdepth;
+        standard_metadata.deq_timedelta = smeta_1.deq_timedelta;
+        standard_metadata.deq_qdepth = smeta_1.deq_qdepth;
+        standard_metadata.ingress_global_timestamp = smeta_1.ingress_global_timestamp;
+        standard_metadata.egress_global_timestamp = smeta_1.egress_global_timestamp;
+        standard_metadata.mcast_grp = smeta_1.mcast_grp;
+        standard_metadata.egress_rid = smeta_1.egress_rid;
+        standard_metadata.checksum_error = smeta_1.checksum_error;
+        standard_metadata.parser_error = smeta_1.parser_error;
+        standard_metadata.priority = smeta_1.priority;
     }
     @name("ingress.set_l2ptr") action set_l2ptr(bit<32> l2ptr) {
-        meta.fwd.l2ptr = l2ptr;
+        meta._fwd_l2ptr0 = l2ptr;
     }
     @name("ingress.set_mcast_grp") action set_mcast_grp(bit<16> mcast_grp) {
         standard_metadata.mcast_grp = mcast_grp;
     }
     @name("ingress.do_resubmit") action do_resubmit(bit<32> new_ipv4_dstAddr) {
         hdr.ipv4.dstAddr = new_ipv4_dstAddr;
-        resubmit<standard_metadata_t>(standard_metadata);
+        resubmit<tuple_0>({  });
     }
     @name("ingress.do_clone_i2e") action do_clone_i2e(bit<32> l2ptr) {
-        clone3<standard_metadata_t>(CloneType.I2E, 32w5, standard_metadata);
-        meta.fwd.l2ptr = l2ptr;
+        clone3<tuple_0>(CloneType.I2E, 32w5, {  });
+        meta._fwd_l2ptr0 = l2ptr;
     }
     @name("ingress.ipv4_da_lpm") table ipv4_da_lpm_0 {
         key = {
@@ -91,14 +161,14 @@ control ingress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_
         default_action = my_drop();
     }
     @name("ingress.set_bd_dmac_intf") action set_bd_dmac_intf(bit<24> bd, bit<48> dmac, bit<9> intf) {
-        meta.fwd.out_bd = bd;
+        meta._fwd_out_bd1 = bd;
         hdr.ethernet.dstAddr = dmac;
         standard_metadata.egress_spec = intf;
         hdr.ipv4.ttl = hdr.ipv4.ttl + 8w255;
     }
     @name("ingress.mac_da") table mac_da_0 {
         key = {
-            meta.fwd.l2ptr: exact @name("meta.fwd.l2ptr") ;
+            meta._fwd_l2ptr0: exact @name("meta.fwd.l2ptr") ;
         }
         actions = {
             set_bd_dmac_intf();
@@ -108,11 +178,11 @@ control ingress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_
     }
     @hidden action act() {
         hdr.ipv4.srcAddr = 32w184320258;
-        meta.fwd.l2ptr = 32w0xe50b;
+        meta._fwd_l2ptr0 = 32w0xe50b;
     }
     @hidden action act_0() {
         hdr.ipv4.srcAddr = 32w180835939;
-        meta.fwd.l2ptr = 32w0xec1c;
+        meta._fwd_l2ptr0 = 32w0xec1c;
     }
     @hidden table tbl_act {
         actions = {
@@ -129,26 +199,58 @@ control ingress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_
     apply {
         if (standard_metadata.instance_type == 32w6) {
             tbl_act.apply();
+        } else if (standard_metadata.instance_type == 32w4) {
+            tbl_act_0.apply();
+        } else {
+            ipv4_da_lpm_0.apply();
         }
-        else 
-            if (standard_metadata.instance_type == 32w4) {
-                tbl_act_0.apply();
-            }
-            else 
-                ipv4_da_lpm_0.apply();
-        if (meta.fwd.l2ptr != 32w0) 
+        if (meta._fwd_l2ptr0 != 32w0) {
             mac_da_0.apply();
+        }
     }
 }
 
 control egress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_t standard_metadata) {
+    standard_metadata_t smeta_2;
     @name(".NoAction") action NoAction_0() {
     }
     @name(".my_drop") action my_drop_1() {
-        mark_to_drop();
+        smeta_2.ingress_port = standard_metadata.ingress_port;
+        smeta_2.egress_spec = standard_metadata.egress_spec;
+        smeta_2.egress_port = standard_metadata.egress_port;
+        smeta_2.instance_type = standard_metadata.instance_type;
+        smeta_2.packet_length = standard_metadata.packet_length;
+        smeta_2.enq_timestamp = standard_metadata.enq_timestamp;
+        smeta_2.enq_qdepth = standard_metadata.enq_qdepth;
+        smeta_2.deq_timedelta = standard_metadata.deq_timedelta;
+        smeta_2.deq_qdepth = standard_metadata.deq_qdepth;
+        smeta_2.ingress_global_timestamp = standard_metadata.ingress_global_timestamp;
+        smeta_2.egress_global_timestamp = standard_metadata.egress_global_timestamp;
+        smeta_2.mcast_grp = standard_metadata.mcast_grp;
+        smeta_2.egress_rid = standard_metadata.egress_rid;
+        smeta_2.checksum_error = standard_metadata.checksum_error;
+        smeta_2.parser_error = standard_metadata.parser_error;
+        smeta_2.priority = standard_metadata.priority;
+        mark_to_drop(smeta_2);
+        standard_metadata.ingress_port = smeta_2.ingress_port;
+        standard_metadata.egress_spec = smeta_2.egress_spec;
+        standard_metadata.egress_port = smeta_2.egress_port;
+        standard_metadata.instance_type = smeta_2.instance_type;
+        standard_metadata.packet_length = smeta_2.packet_length;
+        standard_metadata.enq_timestamp = smeta_2.enq_timestamp;
+        standard_metadata.enq_qdepth = smeta_2.enq_qdepth;
+        standard_metadata.deq_timedelta = smeta_2.deq_timedelta;
+        standard_metadata.deq_qdepth = smeta_2.deq_qdepth;
+        standard_metadata.ingress_global_timestamp = smeta_2.ingress_global_timestamp;
+        standard_metadata.egress_global_timestamp = smeta_2.egress_global_timestamp;
+        standard_metadata.mcast_grp = smeta_2.mcast_grp;
+        standard_metadata.egress_rid = smeta_2.egress_rid;
+        standard_metadata.checksum_error = smeta_2.checksum_error;
+        standard_metadata.parser_error = smeta_2.parser_error;
+        standard_metadata.priority = smeta_2.priority;
     }
     @name("egress.set_out_bd") action set_out_bd(bit<24> bd) {
-        meta.fwd.out_bd = bd;
+        meta._fwd_out_bd1 = bd;
     }
     @name("egress.get_multicast_copy_out_bd") table get_multicast_copy_out_bd_0 {
         key = {
@@ -166,15 +268,15 @@ control egress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_t
     }
     @name("egress.do_recirculate") action do_recirculate(bit<32> new_ipv4_dstAddr) {
         hdr.ipv4.dstAddr = new_ipv4_dstAddr;
-        recirculate<standard_metadata_t>(standard_metadata);
+        recirculate<tuple_0>({  });
     }
     @name("egress.do_clone_e2e") action do_clone_e2e(bit<48> smac) {
         hdr.ethernet.srcAddr = smac;
-        clone3<standard_metadata_t>(CloneType.E2E, 32w11, standard_metadata);
+        clone3<tuple_0>(CloneType.E2E, 32w11, {  });
     }
     @name("egress.send_frame") table send_frame_0 {
         key = {
-            meta.fwd.out_bd: exact @name("meta.fwd.out_bd") ;
+            meta._fwd_out_bd1: exact @name("meta.fwd.out_bd") ;
         }
         actions = {
             rewrite_mac();
@@ -209,16 +311,14 @@ control egress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_t
     apply {
         if (standard_metadata.instance_type == 32w1) {
             tbl_act_1.apply();
+        } else if (standard_metadata.instance_type == 32w2) {
+            tbl_act_2.apply();
+        } else {
+            if (standard_metadata.instance_type == 32w5) {
+                get_multicast_copy_out_bd_0.apply();
+            }
+            send_frame_0.apply();
         }
-        else 
-            if (standard_metadata.instance_type == 32w2) {
-                tbl_act_2.apply();
-            }
-            else {
-                if (standard_metadata.instance_type == 32w5) 
-                    get_multicast_copy_out_bd_0.apply();
-                send_frame_0.apply();
-            }
     }
 }
 
@@ -230,7 +330,7 @@ control DeparserImpl(packet_out packet, in headers_t hdr) {
     }
 }
 
-struct tuple_0 {
+struct tuple_1 {
     bit<4>  field;
     bit<4>  field_0;
     bit<8>  field_1;
@@ -246,13 +346,13 @@ struct tuple_0 {
 
 control verifyChecksum(inout headers_t hdr, inout meta_t meta) {
     apply {
-        verify_checksum<tuple_0, bit<16>>(hdr.ipv4.isValid() && hdr.ipv4.ihl == 4w5, { hdr.ipv4.version, hdr.ipv4.ihl, hdr.ipv4.diffserv, hdr.ipv4.totalLen, hdr.ipv4.identification, hdr.ipv4.flags, hdr.ipv4.fragOffset, hdr.ipv4.ttl, hdr.ipv4.protocol, hdr.ipv4.srcAddr, hdr.ipv4.dstAddr }, hdr.ipv4.hdrChecksum, HashAlgorithm.csum16);
+        verify_checksum<tuple_1, bit<16>>(hdr.ipv4.isValid() && hdr.ipv4.ihl == 4w5, { hdr.ipv4.version, hdr.ipv4.ihl, hdr.ipv4.diffserv, hdr.ipv4.totalLen, hdr.ipv4.identification, hdr.ipv4.flags, hdr.ipv4.fragOffset, hdr.ipv4.ttl, hdr.ipv4.protocol, hdr.ipv4.srcAddr, hdr.ipv4.dstAddr }, hdr.ipv4.hdrChecksum, HashAlgorithm.csum16);
     }
 }
 
 control computeChecksum(inout headers_t hdr, inout meta_t meta) {
     apply {
-        update_checksum<tuple_0, bit<16>>(hdr.ipv4.isValid() && hdr.ipv4.ihl == 4w5, { hdr.ipv4.version, hdr.ipv4.ihl, hdr.ipv4.diffserv, hdr.ipv4.totalLen, hdr.ipv4.identification, hdr.ipv4.flags, hdr.ipv4.fragOffset, hdr.ipv4.ttl, hdr.ipv4.protocol, hdr.ipv4.srcAddr, hdr.ipv4.dstAddr }, hdr.ipv4.hdrChecksum, HashAlgorithm.csum16);
+        update_checksum<tuple_1, bit<16>>(hdr.ipv4.isValid() && hdr.ipv4.ihl == 4w5, { hdr.ipv4.version, hdr.ipv4.ihl, hdr.ipv4.diffserv, hdr.ipv4.totalLen, hdr.ipv4.identification, hdr.ipv4.flags, hdr.ipv4.fragOffset, hdr.ipv4.ttl, hdr.ipv4.protocol, hdr.ipv4.srcAddr, hdr.ipv4.dstAddr }, hdr.ipv4.hdrChecksum, HashAlgorithm.csum16);
     }
 }
 

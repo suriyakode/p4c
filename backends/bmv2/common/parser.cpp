@@ -73,60 +73,104 @@ Util::IJson* ParserConverter::convertParserStatement(const IR::StatOrDecl* stat)
             auto extmeth = minst->to<P4::ExternMethod>();
             if (extmeth->method->name.name == corelib.packetIn.extract.name) {
                 int argCount = mce->arguments->size();
-                if (argCount == 1 || argCount == 2) {
-                    cstring ename = argCount == 1 ? "extract" : "extract_VL";
-                    result->emplace("op", ename);
-                    auto arg = mce->arguments->at(0);
-                    auto argtype = ctxt->typeMap->getType(arg->expression, true);
-                    if (!argtype->is<IR::Type_Header>()) {
-                        ::error("%1%: extract only accepts arguments with header types, not %2%",
-                                arg, argtype);
-                        return result;
-                    }
-                    auto param = new Util::JsonObject();
-                    params->append(param);
-                    cstring type;
-                    Util::IJson* j = nullptr;
+                if (argCount < 1 || argCount > 2) {
+                    ::error(ErrorType::ERR_UNSUPPORTED_ON_TARGET,
+                            "%1%: unknown extract method", mce);
+                    return result;
+                }
 
-                    if (arg->expression->is<IR::Member>()) {
-                        auto mem = arg->expression->to<IR::Member>();
-                        auto baseType = ctxt->typeMap->getType(mem->expr, true);
-                        if (baseType->is<IR::Type_Stack>()) {
-                            if (mem->member == IR::Type_Stack::next) {
-                                type = "stack";
-                                j = ctxt->conv->convert(mem->expr);
-                            } else {
-                                BUG("%1%: unsupported", mem);
+                cstring ename = argCount == 1 ? "extract" : "extract_VL";
+                result->emplace("op", ename);
+                auto arg = mce->arguments->at(0);
+                auto argtype = ctxt->typeMap->getType(arg->expression, true);
+                if (!argtype->is<IR::Type_Header>()) {
+                    ::error(ErrorType::ERR_INVALID,
+                            "%1%: extract only accepts arguments with header types, not %2%",
+                            arg, argtype);
+                    return result;
+                }
+                auto param = new Util::JsonObject();
+                params->append(param);
+                cstring type;
+                Util::IJson* j = nullptr;
+
+                if (auto mem = arg->expression->to<IR::Member>()) {
+                    auto baseType = ctxt->typeMap->getType(mem->expr, true);
+                    if (baseType->is<IR::Type_Stack>()) {
+                        if (mem->member == IR::Type_Stack::next) {
+                            // stack.next
+                            type = "stack";
+                            j = ctxt->conv->convert(mem->expr);
+                        } else {
+                            BUG("%1%: unsupported", mem);
+                        }
+                    } else if (baseType->is<IR::Type_HeaderUnion>()) {
+                        auto parent = mem->expr->to<IR::Member>();
+                        if (parent != nullptr) {
+                            auto parentType = ctxt->typeMap->getType(parent->expr, true);
+                            if (parentType->is<IR::Type_Stack>()) {
+                                // stack.next.unionfield
+                                if (parent->member == IR::Type_Stack::next) {
+                                    type = "union_stack";
+                                    j = ctxt->conv->convert(parent->expr);
+                                    Util::JsonArray *a;
+                                    if (j->is<Util::JsonArray>()) {
+                                        a = j->to<Util::JsonArray>()->clone();
+                                    } else if (j->is<Util::JsonObject>()) {
+                                        a = new Util::JsonArray();
+                                        a->push_back(j->to<Util::JsonObject>()->get("value"));
+                                    } else {
+                                        BUG("unexpected");
+                                    }
+                                    a->append(mem->member.name);
+                                    auto j0 = new Util::JsonObject();
+                                    j = j0->emplace("value", a);
+                                } else {
+                                    BUG("%1%: unsupported", mem);
+                                }
                             }
                         }
                     }
-                    if (j == nullptr) {
-                        type = "regular";
-                        j = ctxt->conv->convert(arg->expression);
-                    }
-                    auto value = j->to<Util::JsonObject>()->get("value");
-                    param->emplace("type", type);
-                    param->emplace("value", value);
-
-                    if (argCount == 2) {
-                        auto arg2 = mce->arguments->at(1);
-                        auto jexpr = ctxt->conv->convert(arg2->expression, true, false);
-                        auto rwrap = new Util::JsonObject();
-                        // The spec says that this must always be wrapped in an expression
-                        rwrap->emplace("type", "expression");
-                        rwrap->emplace("value", jexpr);
-                        params->append(rwrap);
-                    }
-                    return result;
                 }
+                if (j == nullptr) {
+                    type = "regular";
+                    j = ctxt->conv->convert(arg->expression);
+                }
+                auto value = j->to<Util::JsonObject>()->get("value");
+                param->emplace("type", type);
+                param->emplace("value", value);
+
+                if (argCount == 2) {
+                    auto arg2 = mce->arguments->at(1);
+                    // The spec says that this must always be wrapped in an expression.
+                    // However, calling convert with the third argument set to 'true'
+                    // does not do that.
+                    auto jexpr = ctxt->conv->convert(arg2->expression, true, false);
+                    auto rwrap = new Util::JsonObject();
+                    rwrap->emplace("type", "expression");
+                    rwrap->emplace("value", jexpr);
+                    params->append(rwrap);
+                }
+                return result;
             } else if (extmeth->method->name.name == corelib.packetIn.lookahead.name) {
                 // bare lookahead call -- should flag an error if there's not enough
-                // pakcet data, but ignore for now.
+                // packet data, but ignore for now.
                 return nullptr;
+            } else if (extmeth->method->name.name == corelib.packetIn.advance.name) {
+                if (mce->arguments->size() != 1) {
+                    ::error(ErrorType::ERR_UNSUPPORTED, "%1%: expected 1 argument", mce);
+                    return result;
+                }
+                auto arg = mce->arguments->at(0);
+                auto jexpr = ctxt->conv->convert(arg->expression, true, false);
+                result->emplace("op", "advance");
+                params->append(jexpr);
+                return result;
             }
         } else if (minst->is<P4::ExternFunction>()) {
             auto extfn = minst->to<P4::ExternFunction>();
-            if (extfn->method->name.name == IR::ParserState::verify) {
+            auto extFuncName = extfn->method->name.name;
+            if (extFuncName == IR::ParserState::verify) {
                 result->emplace("op", "verify");
                 BUG_CHECK(mce->arguments->size() == 2, "%1%: Expected 2 arguments", mce);
                 {
@@ -143,6 +187,19 @@ Util::IJson* ParserConverter::convertParserStatement(const IR::StatOrDecl* stat)
                     auto jexpr = ctxt->conv->convert(error->expression, true, false);
                     params->append(jexpr);
                 }
+                return result;
+            } else if (extFuncName == "assert"
+                       || extFuncName == "assume") {
+                BUG_CHECK(mce->arguments->size() == 1, "%1%: Expected 1 argument ", mce);
+                result->emplace("op", "primitive");
+                auto paramValue = new Util::JsonObject();
+                params->append(paramValue);
+                auto paramsArray = mkArrayField(paramValue, "parameters");
+                auto cond = mce->arguments->at(0);
+                auto expr = ctxt->conv->convert(cond->expression, true, true, true);
+                paramsArray->append(expr);
+                paramValue->emplace("op", extFuncName);
+                paramValue->emplace_non_null("source_info", mce->sourceInfoJsonObj());
                 return result;
             }
         } else if (minst->is<P4::BuiltInMethod>()) {
@@ -189,7 +246,7 @@ Util::IJson* ParserConverter::convertParserStatement(const IR::StatOrDecl* stat)
             return result;
         }
     }
-    ::error("%1%: not supported in parser on this target", stat);
+    ::error(ErrorType::ERR_UNSUPPORTED, "in parser on this target", stat);
     return result;
 }
 
@@ -199,11 +256,11 @@ void ParserConverter::convertSimpleKey(const IR::Expression* keySet,
     if (keySet->is<IR::Mask>()) {
         auto mk = keySet->to<IR::Mask>();
         if (!mk->left->is<IR::Constant>()) {
-            ::error("%1% must evaluate to a compile-time constant", mk->left);
+            ::error(ErrorType::ERR_INVALID, "must evaluate to a compile-time constant", mk->left);
             return;
         }
         if (!mk->right->is<IR::Constant>()) {
-            ::error("%1% must evaluate to a compile-time constant", mk->right);
+            ::error(ErrorType::ERR_INVALID, "must evaluate to a compile-time constant", mk->right);
             return;
         }
         value = mk->left->to<IR::Constant>()->value;
@@ -218,7 +275,7 @@ void ParserConverter::convertSimpleKey(const IR::Expression* keySet,
         value = 0;
         mask = 0;
     } else {
-        ::error("%1% must evaluate to a compile-time constant", keySet);
+        ::error(ErrorType::ERR_INVALID, "must evaluate to a compile-time constant", keySet);
         value = 0;
         mask = 0;
     }
@@ -302,7 +359,9 @@ Util::IJson* ParserConverter::stateName(IR::ID state) {
     if (state.name == IR::ParserState::accept) {
         return Util::JsonValue::null;
     } else if (state.name == IR::ParserState::reject) {
-        ::warning("Explicit transition to %1% not supported on this target", state);
+        ::warning(ErrorType::WARN_UNSUPPORTED,
+                  "Explicit transition to %1% not supported on this target",
+                  state);
         return Util::JsonValue::null;
     } else {
         return new Util::JsonValue(state.name);
@@ -371,8 +430,7 @@ ParserConverter::createDefaultTransition() {
 }
 
 bool ParserConverter::preorder(const IR::P4Parser* parser) {
-    // hanw hard-coded parser name assumed by BMv2
-    auto parser_id = ctxt->json->add_parser("parser");
+    auto parser_id = ctxt->json->add_parser(name);
 
     for (auto s : parser->parserLocals) {
         if (auto inst = s->to<IR::P4ValueSet>()) {

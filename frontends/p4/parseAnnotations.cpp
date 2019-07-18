@@ -36,7 +36,13 @@ ParseAnnotations::HandlerMap ParseAnnotations::standardHandlers() {
             PARSE(IR::Annotation::lengthAnnotation, Expression),
 
             // @pkginfo has a key-value list argument.
-            PARSE_KV_LIST(IR::Annotation::pkginfoAnnotation)
+            PARSE_KV_LIST(IR::Annotation::pkginfoAnnotation),
+
+            // @synchronous has a list of method names
+            PARSE_EXPRESSION_LIST(IR::Annotation::synchronousAnnotation),
+
+            // @match has an expression argument
+            PARSE(IR::Annotation::matchAnnotation, Expression),
         };
 }
 
@@ -90,7 +96,7 @@ void ParseAnnotations::postorder(IR::Annotation* annotation) {
         // Unknown annotation. Leave as is, but warn if desired.
         if (warnUnknown && warned.count(name) == 0) {
             warned.insert(name);
-            ::warning("Unknown annotation: %1%", annotation->name);
+            ::warning(ErrorType::WARN_UNKNOWN, "Unknown annotation: %1%", annotation->name);
         }
         return;
     }

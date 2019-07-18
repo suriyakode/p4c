@@ -43,6 +43,7 @@ void ToP4::end_apply(const IR::Node*) {
 
 // Try to guess whether a file is a "system" file
 bool ToP4::isSystemFile(cstring file) {
+    if (noIncludes) return false;
     if (file.startsWith(p4includePath)) return true;
     return false;
 }
@@ -253,7 +254,7 @@ bool ToP4::preorder(const IR::Type_Specialized* t) {
 
 bool ToP4::preorder(const IR::Argument* arg) {
     if (!arg->name.name.isNullOrEmpty()) {
-        builder.append(arg->name.toString());
+        builder.append(arg->name.name);
         builder.append(" = ");
     }
     visit(arg->expression);
@@ -365,12 +366,15 @@ bool ToP4::preorder(const IR::TypeParameters* t) {
     if (!t->empty()) {
         builder.append("<");
         bool first = true;
+        bool decl = isDeclaration;
+        isDeclaration = false;
         for (auto a : t->parameters) {
             if (!first)
                 builder.append(", ");
             first = false;
             visit(a);
         }
+        isDeclaration = decl;
         builder.append(">");
     }
     return false;
@@ -419,15 +423,19 @@ bool ToP4::preorder(const IR::Function* function) {
 
 bool ToP4::preorder(const IR::Type_Extern* t) {
     dump(2);
-    visit(t->annotations);
-    builder.append("extern ");
+    if (isDeclaration) {
+        visit(t->annotations);
+        builder.append("extern "); }
     builder.append(t->name);
     visit(t->typeParameters);
+    if (!isDeclaration)
+        return false;
     builder.spc();
     builder.blockStart();
 
     if (t->attributes.size() != 0)
-        ::warning("%1%: extern has attributes, which are not supported "
+        ::warning(ErrorType::WARN_UNSUPPORTED,
+                  "%1%: extern has attributes, which are not supported "
                   "in P4-16, and thus are not emitted as P4-16", t);
 
     setVecSep(";\n", ";\n");
@@ -470,10 +478,13 @@ bool ToP4::preorder(const IR::Type_Package* package) {
 
 bool ToP4::process(const IR::Type_StructLike* t, const char* name) {
     dump(2);
-    builder.emitIndent();
-    visit(t->annotations);
-    builder.appendFormat("%s ", name);
+    if (isDeclaration) {
+        builder.emitIndent();
+        visit(t->annotations);
+        builder.appendFormat("%s ", name); }
     builder.append(t->name);
+    if (!isDeclaration)
+        return false;
     builder.spc();
     builder.blockStart();
 
@@ -848,10 +859,10 @@ bool ToP4::preorder(const IR::NamedExpression* e) {
 }
 
 bool ToP4::preorder(const IR::StructInitializerExpression* e) {
-    // Currently the P4 language does not have a syntax
-    // for struct initializers, so we use the same syntax as for list expressions.
-    // TODO: this is incorrect if the fields are not in the same order as
-    // in the type.
+    if (e->typeName != nullptr) {
+        visit(e->typeName);
+        builder.append(" ");
+    }
     builder.append("{");
     int prec = expressionPrecedence;
     expressionPrecedence = DBPrint::Prec_Low;
@@ -860,6 +871,8 @@ bool ToP4::preorder(const IR::StructInitializerExpression* e) {
         if (!first)
             builder.append(",");
         first = false;
+        builder.append(c->name.name);
+        builder.append(" = ");
         visit(c->expression);
     }
     expressionPrecedence = prec;
@@ -879,11 +892,14 @@ bool ToP4::preorder(const IR::MethodCallExpression* e) {
         builder.append("(");
     visit(e->method);
     if (!e->typeArguments->empty()) {
+        bool decl = isDeclaration;
+        isDeclaration = false;
         builder.append("<");
         setVecSep(", ");
         visit(e->typeArguments);
         doneVec();
         builder.append(">");
+        isDeclaration = decl;
     }
     builder.append("(");
     setVecSep(", ");
@@ -1035,25 +1051,33 @@ bool ToP4::preorder(const IR::IfStatement* s) {
     visit(s->condition);
     builder.append(") ");
     if (!s->ifTrue->is<IR::BlockStatement>()) {
+        builder.append("{");
         builder.increaseIndent();
         builder.newline();
         builder.emitIndent();
     }
     visit(s->ifTrue);
-    if (!s->ifTrue->is<IR::BlockStatement>())
-        builder.decreaseIndent();
-    if (s->ifFalse != nullptr) {
+    if (!s->ifTrue->is<IR::BlockStatement>()) {
         builder.newline();
+        builder.decreaseIndent();
         builder.emitIndent();
-        builder.append("else ");
-        if (!s->ifFalse->is<IR::BlockStatement>()) {
+        builder.append("}");
+    }
+    if (s->ifFalse != nullptr) {
+        builder.append(" else ");
+        if (!s->ifFalse->is<IR::BlockStatement>() && !s->ifFalse->is<IR::IfStatement>()) {
+            builder.append("{");
             builder.increaseIndent();
             builder.newline();
             builder.emitIndent();
         }
         visit(s->ifFalse);
-        if (!s->ifFalse->is<IR::BlockStatement>())
+        if (!s->ifFalse->is<IR::BlockStatement>() && !s->ifFalse->is<IR::IfStatement>()) {
+            builder.newline();
             builder.decreaseIndent();
+            builder.emitIndent();
+            builder.append("}");
+        }
     }
     return false;
 }
@@ -1150,7 +1174,10 @@ bool ToP4::preorder(const IR::Parameter* p) {
         default:
             BUG("Unexpected case");
     }
+    bool decl = isDeclaration;
+    isDeclaration = false;
     visit(p->type);
+    isDeclaration = decl;
     builder.spc();
     builder.append(p->name);
     if (p->defaultValue != nullptr) {

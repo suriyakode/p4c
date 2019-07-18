@@ -93,7 +93,7 @@ control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadat
         send_back(nselect);
     }
     action operation_drop() {
-        mark_to_drop();
+        mark_to_drop(standard_metadata);
     }
     table calculate {
         key = {
@@ -126,10 +126,11 @@ control MyIngress(inout headers hdr, inout metadata meta, inout standard_metadat
 
     }
     apply {
-        if (hdr.p4calc.isValid()) 
+        if (hdr.p4calc.isValid()) {
             calculate.apply();
-        else 
+        } else {
             operation_drop();
+        }
     }
 }
 

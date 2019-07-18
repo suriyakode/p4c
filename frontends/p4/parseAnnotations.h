@@ -18,6 +18,7 @@ limitations under the License.
 #define _P4_PARSEANNOTATIONS_H_
 
 #include "ir/ir.h"
+#include "frontends/p4/typeChecking/typeChecker.h"
 #include "frontends/parsers/parserDriver.h"
 
 /*
@@ -122,6 +123,8 @@ class ParseAnnotations : public Modifier {
     static bool parseExpressionList(IR::Annotation* annotation);
     static bool parseKvList(IR::Annotation* annotation);
 
+    void addHandler(cstring name, Handler h) { handlers.insert({name, h}); }
+
  private:
     /// Whether to warn about unknown annotations.
     const bool warnUnknown;
@@ -131,6 +134,16 @@ class ParseAnnotations : public Modifier {
     std::set<cstring> warned;
 
     HandlerMap handlers;
+};
+
+/// Clears a type map after calling a ParseAnnotations instance.
+class ParseAnnotationBodies final : public PassManager {
+ public:
+    ParseAnnotationBodies(ParseAnnotations* pa, TypeMap* typeMap) {
+        passes.push_back(pa);
+        passes.push_back(new ClearTypeMap(typeMap));
+        setName("ParseAnnotationBodies");
+    }
 };
 
 }  // namespace P4

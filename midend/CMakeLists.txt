@@ -43,6 +43,8 @@ set (MIDEND_SRCS
   singleArgumentSelect.cpp
   tableHit.cpp
   validateProperties.cpp
+  fillEnumMap.cpp
+  removeAssertAssume.cpp
   )
 
 set (MIDEND_HDRS
@@ -59,7 +61,7 @@ set (MIDEND_HDRS
   expandLookahead.h
   expr_uses.h
   flattenInterfaceStructs.h
-  flattenHeaders.h  
+  flattenHeaders.h
   has_side_effects.h
   interpreter.h
   local_copyprop.h
@@ -81,6 +83,8 @@ set (MIDEND_HDRS
   singleArgumentSelect.h
   tableHit.h
   validateProperties.h
+  fillEnumMap.h
+  removeAssertAssume.h
   )
 
 add_cpplint_files (${CMAKE_CURRENT_SOURCE_DIR} "${MIDEND_SRCS};${MIDEND_HDRS}")

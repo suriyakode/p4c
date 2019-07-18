@@ -57,7 +57,9 @@ const IR::StructInitializerExpression* StructTypeReplacement::explode(
         }
         vec->push_back(new IR::NamedExpression(f->name, expr));
     }
-    return new IR::StructInitializerExpression(fieldType->name, *vec, false);
+    auto type = fieldType->getP4Type()->to<IR::Type_Name>();
+    return new IR::StructInitializerExpression(
+        root->srcInfo, type, type, *vec);
 }
 
 static const IR::Type_Struct* isNestedStruct(const P4::TypeMap* typeMap, const IR::Type* type) {
@@ -142,6 +144,11 @@ const IR::Node* ReplaceStructs::postorder(IR::Member* expression) {
         if (getParent<IR::Member>() != nullptr)
             // We only want to process the outermost Member
             return expression;
+        if (isWrite()) {
+            ::error(ErrorType::ERR_UNSUPPORTED,
+                    "%1%: writing to a structure is not supported on this target", expression);
+            return expression;
+        }
         // Prefix is a reference to a field of the original struct whose
         // type is actually a struct itself.  We need to replace the field
         // with a struct initializer expression.  (This won't work if the

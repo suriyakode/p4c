@@ -64,6 +64,8 @@ static std::vector<std::string> debugSpecs;
 // Each logfile will only be opened once, and will close when we exit.
 static std::unordered_map<std::string, std::unique_ptr<std::ostream>> logfiles;
 
+static std::vector<void (*)(void)> invalidateCallbacks;
+
 int OutputLogPrefix::ostream_xalloc = -1;
 void OutputLogPrefix::setup_ostream_xalloc(std::ostream &out) {
     if (ostream_xalloc < 0) {
@@ -169,13 +171,18 @@ static bool match(const char *pattern, const char *name) {
             if (pattern > pend) pend = pattern + strcspn(pattern, ",:");
             name++;
             continue; }
-        if (*pattern++ != '*') return false;
+        if (!pbackup && *pattern != '*') return false;
+        while (*pattern == '*') {
+            ++pattern;
+            pbackup = nullptr; }
         if (pattern == pend) return true;
+        // FIXME -- does not work for * followed by [ -- matches a literal [ instead.
         while (*name && *name != *pattern) {
             if (pbackup && *name == *pbackup) {
                 pattern = pbackup;
                 break; }
             name++; }
+        if (!*name) return false;
         pbackup = pattern;
     }
 }
@@ -265,6 +272,11 @@ void invalidateCaches(int possibleNewMaxLogLevel) {
     mostRecentInfo = nullptr;
     logLevelCache.clear();
     maximumLogLevel = std::max(maximumLogLevel, possibleNewMaxLogLevel);
+    for (auto fn : invalidateCallbacks) fn();
+}
+
+void addInvalidateCallback(void (*fn)(void)) {
+    invalidateCallbacks.push_back(fn);
 }
 
 }  // namespace Detail

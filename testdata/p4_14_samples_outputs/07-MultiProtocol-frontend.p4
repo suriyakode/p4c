@@ -212,7 +212,7 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
         meta.ing_metadata.egress_port = egress_port;
     }
     @name(".discard") action discard() {
-        mark_to_drop();
+        mark_to_drop(standard_metadata);
     }
     @name(".send_packet") action send_packet() {
         standard_metadata.egress_spec = meta.ing_metadata.egress_port;
@@ -322,14 +322,13 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
             }
         }
 
-        if (hdr.tcp.isValid()) 
+        if (hdr.tcp.isValid()) {
             tcp_check_0.apply();
-        else 
-            if (hdr.udp.isValid()) 
-                udp_check_0.apply();
-            else 
-                if (hdr.icmp.isValid()) 
-                    icmp_check_0.apply();
+        } else if (hdr.udp.isValid()) {
+            udp_check_0.apply();
+        } else if (hdr.icmp.isValid()) {
+            icmp_check_0.apply();
+        }
         set_egress_0.apply();
     }
 }

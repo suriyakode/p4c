@@ -34,7 +34,21 @@ class ActionSynthesisPolicy {
        If the policy returns true the control block is processed,
        otherwise it is left unchanged.
     */
-    virtual bool convert(const IR::P4Control* control) const = 0;
+    virtual bool convert(const Visitor::Context *ctxt, const IR::P4Control* control) = 0;
+
+    /**
+       Called for each statement that may be put into an action when there are preceeding
+       statements already put into an action --
+        @param ctxt context of the code being processsed (control and parents)
+        @param blk  previous statement(s) being put into an action
+        @param stmt statement to be added to the block for a single action
+        @returns
+            true  statement should be added to the same action
+            false statement should start a new action
+    */
+    virtual bool can_combine(const Visitor::Context *, const IR::BlockStatement *,
+                             const IR::StatOrDecl *) {
+        return true; }
 };
 
 /**
@@ -115,11 +129,11 @@ class DoSynthesizeActions : public Transform {
     const IR::Node* preorder(IR::P4Control* control) override;
     const IR::Node* preorder(IR::P4Action* action) override
     { prune(); return action; }  // skip actions
-    // We do not handle return and exit: this pass should be called after
-    // these have been removed
+    // We do not handle return: this pass should be called after it has been removed
     const IR::Node* preorder(IR::BlockStatement* statement) override;
     const IR::Node* preorder(IR::AssignmentStatement* statement) override;
     const IR::Node* preorder(IR::MethodCallStatement* statement) override;
+    const IR::Node* preorder(IR::ExitStatement* statement) override;
     const IR::Node* preorder(IR::Function* function) override
     { prune(); return function; }
 
@@ -130,8 +144,11 @@ class DoSynthesizeActions : public Transform {
 class SynthesizeActions : public PassManager {
  public:
     SynthesizeActions(ReferenceMap* refMap, TypeMap* typeMap,
-                      ActionSynthesisPolicy* policy = nullptr) {
-        passes.push_back(new TypeChecking(refMap, typeMap));
+                      ActionSynthesisPolicy* policy = nullptr,
+                      TypeChecking* typeChecking = nullptr) {
+        if (!typeChecking)
+            typeChecking = new TypeChecking(refMap, typeMap);
+        passes.push_back(typeChecking);
         passes.push_back(new DoSynthesizeActions(refMap, typeMap, policy));
         setName("SynthesizeActions");
     }
@@ -139,8 +156,11 @@ class SynthesizeActions : public PassManager {
 
 class MoveActionsToTables : public PassManager {
  public:
-    MoveActionsToTables(ReferenceMap* refMap, TypeMap* typeMap) {
-        passes.push_back(new TypeChecking(refMap, typeMap));
+    MoveActionsToTables(ReferenceMap* refMap, TypeMap* typeMap,
+            TypeChecking* typeChecking = nullptr) {
+        if (!typeChecking)
+            typeChecking = new TypeChecking(refMap, typeMap);
+        passes.push_back(typeChecking);
         passes.push_back(new DoMoveActionsToTables(refMap, typeMap));
         setName("MoveActionsToTables");
     }

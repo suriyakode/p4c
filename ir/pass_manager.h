@@ -33,9 +33,6 @@ class PassManager : virtual public Visitor, virtual public Backtrack {
     bool                stop_on_error = true;
     bool                running = false;
     unsigned            seqNo = 0;
-    void addPasses(const std::initializer_list<Visitor *> &init) {
-        never_backtracks_cache = -1;
-        for (auto p : init) if (p) passes.emplace_back(p); }
     void runDebugHooks(const char* visitorName, const IR::Node* node);
     profile_t init_apply(const IR::Node *root) override {
         running = true;
@@ -45,6 +42,9 @@ class PassManager : virtual public Visitor, virtual public Backtrack {
     PassManager() = default;
     PassManager(const std::initializer_list<Visitor *> &init)
     { addPasses(init); }
+    void addPasses(const std::initializer_list<Visitor *> &init) {
+        never_backtracks_cache = -1;
+        for (auto p : init) if (p) passes.emplace_back(p); }
     const IR::Node *apply_visitor(const IR::Node *, const char * = 0) override;
     bool backtrack(trigger &trig) override;
     bool never_backtracks() override;
@@ -68,9 +68,9 @@ class PassManager : virtual public Visitor, virtual public Backtrack {
 class PassRepeated : virtual public PassManager {
     unsigned            repeats;  // 0 = until convergence
  public:
-    PassRepeated() : PassRepeated({}) {}
+    PassRepeated() : repeats(0) {}
     PassRepeated(const std::initializer_list<Visitor *> &init) :
-            PassManager(init), repeats(0) { setName("PassRepeated"); }
+            PassManager(init), repeats(0) {}
     const IR::Node *apply_visitor(const IR::Node *, const char * = 0) override;
     PassRepeated *setRepeats(unsigned repeats) { this->repeats = repeats; return this; }
 };
@@ -78,6 +78,7 @@ class PassRepeated : virtual public PassManager {
 class PassRepeatUntil : virtual public PassManager {
     std::function<bool()>       done;
  public:
+    explicit PassRepeatUntil(std::function<bool()> done) : done(done) {}
     PassRepeatUntil(const std::initializer_list<Visitor *> &init,
                     std::function<bool()> done)
     : PassManager(init), done(done) {}

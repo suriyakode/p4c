@@ -81,7 +81,7 @@ control egress(inout headers hdr, inout metadata meta, inout standard_metadata_t
 
 control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
     @name("._drop") action _drop() {
-        mark_to_drop();
+        mark_to_drop(standard_metadata);
     }
     @name(".route") action route() {
         standard_metadata.egress_spec = (bit<9>)hdr.axon_fwdHop[0].port;
@@ -114,8 +114,7 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
     apply {
         if (hdr.axon_head.axonLength != meta.my_metadata.headerLen) {
             drop_pkt.apply();
-        }
-        else {
+        } else {
             route_pkt.apply();
         }
     }

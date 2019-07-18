@@ -2,11 +2,8 @@
 #include <v1model.p4>
 
 struct intrinsic_metadata_t {
-    bit<4>  mcast_grp;
-    bit<4>  egress_rid;
-    bit<16> mcast_hash;
-    bit<32> lf_field_list;
-    bit<16> resubmit_flag;
+    bit<4> mcast_grp;
+    bit<4> egress_rid;
 }
 
 struct mymeta_t {
@@ -20,10 +17,8 @@ header ethernet_t {
 }
 
 struct metadata {
-    @name(".intrinsic_metadata") 
-    intrinsic_metadata_t intrinsic_metadata;
     @name(".mymeta") 
-    mymeta_t             mymeta;
+    mymeta_t mymeta;
 }
 
 struct headers {

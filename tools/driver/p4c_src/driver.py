@@ -147,10 +147,16 @@ class BackendDriver:
 
         # P4Runtime options
         if opts.p4runtime_file:
+            print >> sys.stderr, "'--p4runtime-file' and '--p4runtime-format'", \
+                "are deprecated, consider using '--p4runtime-files'"
             self.add_command_option('compiler',
-                                       "--p4runtime-file {}".format(opts.p4runtime_file))
+                                    "--p4runtime-file {}".format(opts.p4runtime_file))
             self.add_command_option('compiler',
-                                       "--p4runtime-format {}".format(opts.p4runtime_format))
+                                    "--p4runtime-format {}".format(opts.p4runtime_format))
+
+        if opts.p4runtime_files:
+            self.add_command_option('compiler',
+                                    "--p4runtime-files {}".format(opts.p4runtime_files))
 
         # set developer options
         if (os.environ['P4C_BUILD_TYPE'] == "DEVELOPER"):
@@ -164,8 +170,12 @@ class BackendDriver:
                 self.add_command_option('compiler', "--dump {}".format(opts.dump_dir))
             if opts.json:
                 self.add_command_option('compiler', "--toJSON {}".format(opts.json))
+            if opts.json_source:
+                self.add_command_option('compiler', "--fromJSON {}".format(opts.json_source))
             if opts.pretty_print:
                 self.add_command_option('compiler', "--pp {}".format(opts.pretty_print))
+            if opts.ndebug_mode:
+                self.add_command_option('compiler', "--ndebug")
 
         if (os.environ['P4C_BUILD_TYPE'] == "DEVELOPER") and \
            'assembler' in self._commands and opts.debug:
@@ -280,3 +290,5 @@ class BackendDriver:
             # backends that override run can chose what to do on error
             if rc != 0:
                 return rc
+
+        return 0

@@ -12,7 +12,7 @@ struct test_struct {
 }
 
 struct local_metadata_t {
-    test_struct test;
+    error _test_test_error0;
 }
 
 parser parse(packet_in pk, out parsed_packet_t hdr, inout local_metadata_t local_metadata, inout standard_metadata_t standard_metadata) {
@@ -23,7 +23,7 @@ parser parse(packet_in pk, out parsed_packet_t hdr, inout local_metadata_t local
 
 control ingress(inout parsed_packet_t hdr, inout local_metadata_t local_metadata, inout standard_metadata_t standard_metadata) {
     @hidden action act() {
-        mark_to_drop();
+        mark_to_drop(standard_metadata);
     }
     @hidden table tbl_act {
         actions = {
@@ -32,8 +32,9 @@ control ingress(inout parsed_packet_t hdr, inout local_metadata_t local_metadata
         const default_action = act();
     }
     apply {
-        if (local_metadata.test.test_error == error.Unused) 
+        if (local_metadata._test_test_error0 == error.Unused) {
             tbl_act.apply();
+        }
     }
 }
 

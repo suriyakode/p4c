@@ -151,8 +151,6 @@ def recompile_file(options, produced, mustBeIdentical):
 def check_generated_files(options, tmpdir, expecteddir):
     files = os.listdir(tmpdir)
     for file in files:
-        if "p4info" in file:
-            continue
         if options.verbose:
             print("Checking", file)
         produced = tmpdir + "/" + file
@@ -200,7 +198,8 @@ def process_file(options, argv):
     ppfile = tmpdir + "/" + basename                  # after parsing
     referenceOutputs = ",".join(rename.keys())
     stderr = tmpdir + "/" + basename + "-stderr"
-    p4runtimefile = tmpdir + "/" + basename + ".p4info.txt"
+    p4runtimeFile = tmpdir + "/" + basename + ".p4info.txt"
+    p4runtimeEntriesFile = tmpdir + "/" + basename + ".entries.txt"
 
     # Create the `json_outputs` directory if it doesn't already exist. There's a
     # race here since multiple tests may run this code in parallel, so we can't
@@ -236,8 +235,8 @@ def process_file(options, argv):
     if arch is not None:
         args.extend(["--arch", arch])
         if options.generateP4Runtime:
-            args.extend(["--p4runtime-format", "text"])
-            args.extend(["--p4runtime-file", p4runtimefile])
+            args.extend(["--p4runtime-files", p4runtimeFile])
+            args.extend(["--p4runtime-entries-files", p4runtimeEntriesFile])
 
     if "p4_14" in options.p4filename or "v1_samples" in options.p4filename:
         args.extend(["--std", "p4-14"]);
@@ -280,7 +279,7 @@ def process_file(options, argv):
         result = check_generated_files(options, tmpdir, expected_dirname);
     if (result == SUCCESS) and (not expected_error):
         result = recompile_file(options, ppfile, False)
-    if (result == SUCCESS) and (not expected_error) and (lastFile is not None):
+    if (result == SUCCESS) and (not expected_error) and (lastFile is not None) and (arch is not "psa"):
         # Unfortunately compilation and pretty-printing of lastFile is
         # not idempotent: For example a constant such as 8s128 is
         # converted by the compiler to -8s128.

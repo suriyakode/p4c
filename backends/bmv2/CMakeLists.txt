@@ -119,6 +119,7 @@ p4c_find_tests("${P4TESTS_FOR_V1MODEL}" v1tests INCLUDE "${V1_INCLUDE_PATTERNS}"
 
 set (BMV2_V1MODEL_TEST_SUITES
   "${P4C_SOURCE_DIR}/testdata/p4_16_bmv_errors/*-bmv2.p4"
+  "${P4C_SOURCE_DIR}/testdata/p4_16_samples/fabric_*/fabric.p4"
   "${P4C_SOURCE_DIR}/testdata/p4_14_samples/switch_*/switch.p4"
   "${P4C_SOURCE_DIR}/testdata/p4_14_samples/*.p4"
   ${v1tests}
@@ -144,6 +145,17 @@ set (XFAIL_TESTS
   testdata/p4_14_samples/issue60.p4
   # compiler claims (incorrectly?) that c2 has mulitple successors, so is not supported
   testdata/p4_14_samples/issue-1426.p4
+  # As of 2019-Feb-04 latest p4c code, this program fails due to the
+  # root cause of both issues #1694 and #1669.  I have tested it with
+  # the proposed fix for issue #1694 that is on PR #1704, and while
+  # that does make the produced BMv2 JSON file able to cause packets
+  # to be recirculated, resubmitted, etc. it still has the bug of not
+  # preserving the metadata specified in the program's field_lists, so
+  # the STF tests fail because of issue #1669.  As of this writing,
+  # this program is the _only_ p4c test program that relies for its
+  # successful execution on the preservation of metadata across
+  # resubmit, recirculate, and/or clone operations.
+  testdata/p4_14_samples/p414-special-ops-2-bmv2.p4
   # This test uses a feature currently unsupported in the BMv2 back-end.
   testdata/p4_16_samples/issue907-bmv2.p4
   # This test uses a table graph that is not implementable in BMv2
@@ -158,13 +170,21 @@ set (XFAIL_TESTS
   # This test uses an incorrect model
   testdata/p4_16_samples/issue1205-bmv2.p4
   # These psa tests are not ready to run on bmv2 yet
-  testdata/p4_16_samples/psa-example-counters-bmv2.p4
   testdata/p4_16_samples/psa-example-digest-bmv2.p4
   testdata/p4_16_samples/psa-example-register2-bmv2.p4
-  testdata/p4_16_samples/psa-fwd-bmv2.p4
   # This reads stack.next
   testdata/p4_16_samples/issue692-bmv2.p4
-  )
+  # These test use computations in the verify/update checksum controls - unsupported
+  testdata/p4_16_samples/issue1765-bmv2.p4
+  testdata/p4_16_samples/issue1765-1-bmv2.p4
+  # These tests require bmv2's psa_switch to support std metadata passing at minimum
+  testdata/p4_16_samples/psa-ingress-input-meta-bmv2.p4
+  # Next two use unknown externs
+  testdata/p4_16_samples/issue1882-bmv2.p4
+  testdata/p4_16_samples/issue1882-1-bmv2.p4
+  # Uses non-constant array index
+  testdata/p4_16_samples/issue1989-bmv2.p4
+)
 
 if (HAVE_SIMPLE_SWITCH)
   p4c_add_tests("bmv2" ${BMV2_DRIVER} "${BMV2_V1MODEL_TEST_SUITES}" "${XFAIL_TESTS}")

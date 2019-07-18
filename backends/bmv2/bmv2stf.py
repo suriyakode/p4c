@@ -79,6 +79,12 @@ def HexToByte(hexStr):
         bytes.append( chr( int (hexStr[i:i+2], 16 ) ) )
     return ''.join( bytes )
 
+def convert_packet_bin2hexstr(pkt_bin):
+    return ''.join(ByteToHex(str(pkt_bin)).split()).upper()
+
+def convert_packet_stf2hexstr(pkt_stf_text):
+    return ''.join(pkt_stf_text.split()).upper()
+
 def reportError(*message):
     print("***", *message)
 
@@ -388,7 +394,7 @@ class RunBMV2(object):
         self.cli_stdin.flush()
         self.packetDelay = 1
     def do_command(self, cmd):
-        if self.options.verbose:
+        if self.options.verbose and cmd != "":
             print("STF Command:", cmd)
         first, cmd = nextWord(cmd)
         if first == "":
@@ -676,10 +682,17 @@ class RunBMV2(object):
             print("Execution completed")
         return rv
     def comparePacket(self, expected, received):
-        received = ''.join(ByteToHex(str(received)).split()).upper()
-        expected = ''.join(expected.split()).upper()
+        received = convert_packet_bin2hexstr(received)
+        expected = convert_packet_stf2hexstr(expected)
+        strict_length_check = False
+        if expected[-1] == '$':
+            strict_length_check = True
+            expected = expected[:-1]
         if len(received) < len(expected):
-            reportError("Received packet too short", len(received), "vs", len(expected))
+            reportError("Received packet too short", len(received), "vs",
+                        len(expected), "(in units of hex digits)")
+            reportError("Full expected packet is ", expected)
+            reportError("Full received packet is ", received)
             return FAILURE
         for i in range(0, len(expected)):
             if expected[i] == "*":
@@ -687,8 +700,15 @@ class RunBMV2(object):
             if expected[i] != received[i]:
                 reportError("Received packet ", received)
                 reportError("Packet different at position", i, ": expected", expected[i], ", received", received[i])
-                reportError("Full received packed is ", received)
+                reportError("Full expected packet is ", expected)
+                reportError("Full received packet is ", received)
                 return FAILURE
+        if strict_length_check and len(received) > len(expected):
+            reportError("Received packet too long", len(received), "vs",
+                        len(expected), "(in units of hex digits)")
+            reportError("Full expected packet is ", expected)
+            reportError("Full received packet is ", received)
+            return FAILURE
         return SUCCESS
     def showLog(self):
         with open(self.folder + "/" + self.switchLogFile + ".txt") as a:
@@ -717,7 +737,7 @@ class RunBMV2(object):
                 for pkt in packets:
                     observationLog.write('%d %s\n' % (
                         interface,
-                        ''.join(ByteToHex(str(pkt)).split()).upper()))
+                        convert_packet_bin2hexstr(pkt)))
                 observationLog.close()
 
             # Check for expected packets.
@@ -732,6 +752,18 @@ class RunBMV2(object):
             if len(expected) != len(packets):
                 reportError("Expected", len(expected), "packets on port", str(interface),
                             "got", len(packets))
+                reportError("Full list of %d expected packets on port %d:"
+                            "" % (len(expected), interface))
+                for i in range(len(expected)):
+                    reportError("    packet #%2d: %s"
+                                "" % (i+1,
+                                      convert_packet_stf2hexstr(expected[i])))
+                reportError("Full list of %d received packets on port %d:"
+                            "" % (len(packets), interface))
+                for i in range(len(packets)):
+                    reportError("    packet #%2d: %s"
+                                "" % (i+1,
+                                      convert_packet_bin2hexstr(packets[i])))
                 self.showLog()
                 return FAILURE
             for i in range(0, len(expected)):

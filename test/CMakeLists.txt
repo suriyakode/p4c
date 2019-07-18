@@ -59,6 +59,9 @@ set (GTEST_UNITTEST_SOURCES
   gtest/transforms.cpp
   gtest/stringify.cpp
   )
+if (ENABLE_BMV2)
+  set (GTEST_UNITTEST_SOURCES ${GTEST_UNITTEST_SOURCES} gtest/load_ir_from_json.cpp)
+endif()
 set (GTEST_UNITTEST_HEADERS
   gtest/helpers.h
   )

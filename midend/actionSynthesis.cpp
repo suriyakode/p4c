@@ -73,7 +73,7 @@ const IR::Node* DoMoveActionsToTables::postorder(IR::MethodCallStatement* statem
 
     auto annos = new IR::Annotations();
     annos->add(new IR::Annotation(IR::Annotation::hiddenAnnotation, {}));
-    auto tbl = new IR::P4Table(tblName, annos, props);
+    auto tbl = new IR::P4Table(statement->srcInfo, tblName, annos, props);
     tables.push_back(tbl);
 
     // Table invocation statement
@@ -113,7 +113,7 @@ bool DoSynthesizeActions::mustMove(const IR::AssignmentStatement *assign) {
 const IR::Node* DoSynthesizeActions::preorder(IR::P4Control* control) {
     actions.clear();
     changes = false;
-    if (policy != nullptr && !policy->convert(control))
+    if (policy != nullptr && !policy->convert(getContext(), control))
         prune();  // skip this one
     return control;
 }
@@ -130,19 +130,26 @@ const IR::Node* DoSynthesizeActions::preorder(IR::BlockStatement* statement) {
     auto left = new IR::BlockStatement(statement->annotations);  // leftover statements
 
     for (auto c : statement->components) {
-        if (c->is<IR::AssignmentStatement>()) {
-            if (mustMove(c->to<IR::AssignmentStatement>())) {
-                actbody->push_back(c);
-                continue; }
-        } else if (c->is<IR::MethodCallStatement>()) {
-            if (mustMove(c->to<IR::MethodCallStatement>())) {
-                actbody->push_back(c);
-                continue;
-            }
+        bool moveToAction = false;
+        if (auto *as = c->to<IR::AssignmentStatement>()) {
+            moveToAction = mustMove(as);
+        } else if (auto *mc = c->to<IR::MethodCallStatement>()) {
+            moveToAction = mustMove(mc);
+        } else if (c->is<IR::ExitStatement>()) {
+            moveToAction = true;
         } else {
             // This may modify 'changes'
             visit(c);
         }
+        if (moveToAction) {
+            if (policy && !actbody->components.empty() &&
+                !policy->can_combine(getContext(), actbody, c)) {
+                auto action = createAction(actbody);
+                left->push_back(action);
+                actbody = new IR::BlockStatement; }
+            actbody->push_back(c);
+            actbody->srcInfo += c->srcInfo;
+            continue; }
 
         if (!actbody->components.empty()) {
             auto action = createAction(actbody);
@@ -174,14 +181,15 @@ const IR::Statement* DoSynthesizeActions::createAction(const IR::Statement* toAd
     } else {
         body = new IR::BlockStatement(toAdd->srcInfo, { toAdd });
     }
+    LOG3("Adding new action " << name << body);
 
     auto annos = new IR::Annotations();
     annos->add(new IR::Annotation(IR::Annotation::hiddenAnnotation, {}));
     auto action = new IR::P4Action(name, annos, new IR::ParameterList(), body);
     actions.push_back(action);
     auto actpath = new IR::PathExpression(name);
-    auto repl = new IR::MethodCallExpression(actpath);
-    auto result = new IR::MethodCallStatement(repl->srcInfo, repl);
+    auto repl = new IR::MethodCallExpression(toAdd->srcInfo, actpath);
+    auto result = new IR::MethodCallStatement(toAdd->srcInfo, repl);
     return result;
 }
 
@@ -195,6 +203,10 @@ const IR::Node* DoSynthesizeActions::preorder(IR::MethodCallStatement* statement
     if (mustMove(statement))
         return createAction(statement);
     return statement;
+}
+
+const IR::Node* DoSynthesizeActions::preorder(IR::ExitStatement* statement) {
+    return createAction(statement);
 }
 
 }  // namespace P4

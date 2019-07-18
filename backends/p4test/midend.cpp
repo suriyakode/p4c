@@ -35,6 +35,7 @@ limitations under the License.
 #include "midend/eliminateNewtype.h"
 #include "midend/eliminateSerEnums.h"
 #include "midend/flattenHeaders.h"
+#include "midend/flattenInterfaceStructs.h"
 #include "midend/expandEmit.h"
 #include "midend/expandLookahead.h"
 #include "midend/local_copyprop.h"
@@ -50,6 +51,7 @@ limitations under the License.
 #include "midend/simplifySelectCases.h"
 #include "midend/simplifySelectList.h"
 #include "midend/tableHit.h"
+#include "midend/removeAssertAssume.h"
 
 namespace P4Test {
 
@@ -58,7 +60,7 @@ class SkipControls : public P4::ActionSynthesisPolicy {
 
  public:
     explicit SkipControls(const std::set<cstring> *skip) : skip(skip) { CHECK_NULL(skip); }
-    bool convert(const IR::P4Control* control) const override {
+    bool convert(const Visitor::Context *, const IR::P4Control* control) override {
         if (skip->find(control->name) != skip->end())
             return false;
         return true;
@@ -77,6 +79,7 @@ MidEnd::MidEnd(CompilerOptions& options) {
     // TODO: lower errors to integers
     // TODO: handle bit-slices as out arguments
     addPasses({
+        options.ndebug ? new P4::RemoveAssertAssume(&refMap, &typeMap) : nullptr,
         new P4::EliminateNewtype(&refMap, &typeMap),
         new P4::EliminateSerEnums(&refMap, &typeMap),
         new P4::RemoveActionParameters(&refMap, &typeMap),
@@ -91,7 +94,7 @@ MidEnd::MidEnd(CompilerOptions& options) {
         new P4::ExpandEmit(&refMap, &typeMap),
         new P4::HandleNoMatch(&refMap),
         new P4::SimplifyParsers(&refMap),
-        new P4::StrengthReduction(),
+        new P4::StrengthReduction(&refMap, &typeMap),
         new P4::EliminateTuples(&refMap, &typeMap),
         new P4::SimplifyComparisons(&refMap, &typeMap),
         new P4::CopyStructures(&refMap, &typeMap),
@@ -99,6 +102,7 @@ MidEnd::MidEnd(CompilerOptions& options) {
         new P4::SimplifySelectList(&refMap, &typeMap),
         new P4::RemoveSelectBooleans(&refMap, &typeMap),
         new P4::FlattenHeaders(&refMap, &typeMap),
+        new P4::FlattenInterfaceStructs(&refMap, &typeMap),
         new P4::Predication(&refMap),
         new P4::MoveDeclarations(),  // more may have been introduced
         new P4::ConstantFolding(&refMap, &typeMap),

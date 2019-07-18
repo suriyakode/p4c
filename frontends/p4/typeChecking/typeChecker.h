@@ -35,7 +35,7 @@ class ClearTypeMap : public Inspector {
     TypeMap* typeMap;
  public:
     explicit ClearTypeMap(TypeMap* typeMap) :
-            typeMap(typeMap) { CHECK_NULL(typeMap); setName("ClearTypeMap"); }
+            typeMap(typeMap) { CHECK_NULL(typeMap); }
     bool preorder(const IR::P4Program* program) override {
         // Clear map only if program has not changed from last time
         // otherwise we can reuse it
@@ -67,8 +67,6 @@ class TypeInference : public Transform {
     ReferenceMap* refMap;
     // Output: type map
     TypeMap* typeMap;
-    // If true we expect to leave the program unchanged
-    bool readOnly;
     const IR::Node* initialNode;
 
  public:
@@ -78,6 +76,8 @@ class TypeInference : public Transform {
                   bool readOnly = false);
 
  protected:
+    // If true we expect to leave the program unchanged
+    bool readOnly;
     const IR::Type* getType(const IR::Node* element) const;
     const IR::Type* getTypeType(const IR::Node* element) const;
     void setType(const IR::Node* element, const IR::Type* type);
@@ -89,11 +89,6 @@ class TypeInference : public Transform {
     { typeMap->setCompileTimeConstant(expression); }
     bool isCompileTimeConstant(const IR::Expression* expression) const
     { return typeMap->isCompileTimeConstant(expression); }
-
-    template<typename... T>
-    void typeError(const char* format, T... args) const {
-        ::error(format, args...);
-    }
 
     // This is needed because sometimes we invoke visitors recursively on subtrees explicitly.
     // (visitDagOnce cannot take care of this).
@@ -118,10 +113,15 @@ class TypeInference : public Transform {
     bool checkAbstractMethods(const IR::Declaration_Instance* inst, const IR::Type_Extern* type);
     void addSubstitutions(const TypeVariableSubstitution* tvs);
 
-    /** Converts each type to a canonical representation. */
-    const IR::Type* canonicalize(const IR::Type* type);
-    const IR::IndexedVector<IR::StructField>* canonicalizeFields(const IR::Type_StructLike* type);
-    const IR::ParameterList* canonicalizeParameters(const IR::ParameterList* params);
+
+    /** Converts each type to a canonical representation.
+     *  Made virtual to enable private midend passes to extend standard IR with custom IR classes.
+     */
+    virtual const IR::Type* canonicalize(const IR::Type* type);
+    const IR::Type* canonicalizeFields(
+        const IR::Type_StructLike* type,
+        std::function<const IR::Type*(const IR::IndexedVector<IR::StructField>*)> constructor);
+    virtual const IR::ParameterList* canonicalizeParameters(const IR::ParameterList* params);
 
     // various helpers
     bool hasVarbitsOrUnions(const IR::Type* type) const;
@@ -155,7 +155,7 @@ class TypeInference : public Transform {
     static constexpr bool forbidPackages = true;
     bool checkParameters(const IR::ParameterList* paramList,
                          bool forbidModules = false, bool forbidPackage = false) const;
-    const IR::Type* setTypeType(const IR::Type* type, bool learn = true);
+    virtual const IR::Type* setTypeType(const IR::Type* type, bool learn = true);
 
     /// This is used to validate the initializer for the default_action
     /// or for actions in the entries list.  Returns the action list element
@@ -169,6 +169,10 @@ class TypeInference : public Transform {
     using Transform::postorder;
     using Transform::preorder;
 
+    template<typename... T>
+    static void typeError(const char* format, T... args) {
+        ::error(ErrorType::ERR_TYPE_ERROR, format, args...);
+    }
     static const IR::Type* specialize(const IR::IMayBeGenericType* type,
                                       const IR::Vector<IR::Type>* arguments);
     const IR::Node* pruneIfDone(const IR::Node* node)
@@ -278,6 +282,8 @@ class TypeInference : public Transform {
 
     Visitor::profile_t init_apply(const IR::Node* node) override;
     void end_apply(const IR::Node* Node) override;
+
+    TypeInference* clone() const override;
 };
 
 // Copy types from the typeMap to expressions.  Updates the typeMap with newly created nodes
@@ -304,8 +310,7 @@ class ApplyTypesToExpressions : public Transform {
         return e; }
 
  public:
-    explicit ApplyTypesToExpressions(TypeMap *typeMap) : typeMap(typeMap)
-    { setName("ApplyTypesToExpressions"); }
+    explicit ApplyTypesToExpressions(TypeMap *typeMap) : typeMap(typeMap) { }
 };
 
 }  // namespace P4

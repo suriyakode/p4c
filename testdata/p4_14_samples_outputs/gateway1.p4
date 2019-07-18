@@ -25,7 +25,7 @@ parser ParserImpl(packet_in packet, out headers hdr, inout metadata meta, inout 
 
 control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
     @name("._drop") action _drop() {
-        mark_to_drop();
+        mark_to_drop(standard_metadata);
     }
     @name(".setb1") action setb1(bit<8> val, bit<9> port) {
         hdr.data.b1 = val;
@@ -61,8 +61,7 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
         set_default_behavior_drop.apply();
         if (hdr.data.b2 == 8w1) {
             test1.apply();
-        }
-        else {
+        } else {
             test2.apply();
         }
     }

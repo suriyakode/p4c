@@ -86,6 +86,12 @@ class CompilerOptions : public Util::Options {
     // Write static table entries as a P4Runtime WriteRequest message to the specified file.
     cstring p4RuntimeEntriesFile = nullptr;
 
+    // Write P4Runtime control plane API description to the specified files.
+    cstring p4RuntimeFiles = nullptr;
+
+    // Write static table entries as a P4Runtime WriteRequest message to the specified files.
+    cstring p4RuntimeEntriesFiles = nullptr;
+
     // Choose format for P4Runtime API description.
     P4::P4RuntimeFormat p4RuntimeFormat = P4::P4RuntimeFormat::BINARY;
 
@@ -97,6 +103,9 @@ class CompilerOptions : public Util::Options {
 
     // substrings matched agains pass names
     std::vector<cstring> top4;
+
+    // if this flag is true, compile program in non-debug mode
+    bool ndebug = false;
 
     // Expect that the only remaining argument is the input file.
     void setInputFile();
@@ -111,6 +120,8 @@ class CompilerOptions : public Util::Options {
     // Get a debug hook function suitable for insertion
     // in the pass managers that are executed.
     DebugHook getDebugHook() const;
+
+    virtual bool enable_intrinsic_metadata_fix();
 };
 
 
@@ -121,38 +132,38 @@ class P4CContext : public BaseCompileContext {
     /// P4CContext.
     static P4CContext& get();
 
-    P4CContext();
+    P4CContext() {}
 
     /// @return the compiler options for this compilation context.
     virtual CompilerOptions& options() = 0;
 
     /// @return the default diagnostic action for calls to `::warning()`.
-    DiagnosticAction getDefaultWarningDiagnosticAction() final;
+    DiagnosticAction getDefaultWarningDiagnosticAction() final {
+        return errorReporter().getDefaultWarningDiagnosticAction();
+    }
 
-    /// @return the default diagnostic action for calls to `::warning()`.
-    void setDefaultWarningDiagnosticAction(DiagnosticAction action);
+    /// set the default diagnostic action for calls to `::warning()`.
+    void setDefaultWarningDiagnosticAction(DiagnosticAction action) {
+        errorReporter().setDefaultWarningDiagnosticAction(action);
+    }
 
     /// @return the action to take for the given diagnostic, falling back to the
     /// default action if it wasn't overridden via the command line or a pragma.
     DiagnosticAction
-    getDiagnosticAction(cstring diagnostic, DiagnosticAction defaultAction) final;
+    getDiagnosticAction(cstring diagnostic, DiagnosticAction defaultAction) final {
+        return errorReporter().getDiagnosticAction(diagnostic, defaultAction);
+    }
 
     /// Set the action to take for the given diagnostic.
-    void setDiagnosticAction(cstring diagnostic, DiagnosticAction action);
+    void setDiagnosticAction(cstring diagnostic, DiagnosticAction action) {
+        errorReporter().setDiagnosticAction(diagnostic, action);
+    }
 
  protected:
     /// @return true if the given diagnostic is known to be valid. This is
     /// intended to help the user find misspelled diagnostics and the like; it
     /// doesn't affect functionality.
     virtual bool isRecognizedDiagnostic(cstring diagnostic);
-
- private:
-    /// The default diagnostic action for calls to `::warning()`.
-    DiagnosticAction defaultWarningDiagnosticAction;
-
-    /// A mapping from diagnostic names (as passed to the DIAGNOSE* macros) to
-    /// actions that should be taken when those diagnostics are triggered.
-    std::unordered_map<cstring, DiagnosticAction> diagnosticActions;
 };
 
 /// A utility template which can be used to easily make subclasses of P4CContext

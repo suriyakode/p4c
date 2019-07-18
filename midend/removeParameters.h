@@ -18,6 +18,7 @@ limitations under the License.
 #define _MIDEND_REMOVEPARAMETERS_H_
 
 #include "ir/ir.h"
+#include "frontends/p4/typeChecking/typeChecker.h"
 #include "frontends/common/resolveReferences/referenceMap.h"
 #include "frontends/p4/typeMap.h"
 
@@ -121,11 +122,15 @@ class DoRemoveActionParameters : public Transform {
     const IR::Node* postorder(IR::P4Action* table) override;
     const IR::Node* postorder(IR::ActionListElement* element) override;
     const IR::Node* postorder(IR::MethodCallExpression* expression) override;
+    ActionInvocation* getInvocations() {
+        return invocations;
+    }
 };
 
 class RemoveActionParameters : public PassManager {
  public:
-    RemoveActionParameters(ReferenceMap* refMap, TypeMap* typeMap);
+    RemoveActionParameters(ReferenceMap* refMap, TypeMap* typeMap,
+                           TypeChecking* typeChecking = nullptr);
 };
 
 }  // namespace P4

@@ -129,11 +129,13 @@ bool TypeMap::equivalent(const IR::Type* left, const IR::Type* right) {
         auto ls = left->to<IR::Type_Stack>();
         auto rs = right->to<IR::Type_Stack>();
         if (!ls->sizeKnown()) {
-            ::error("%1%: Size of header stack type should be a constant", left);
+            ::error(ErrorType::ERR_TYPE_ERROR,
+                    "%1%: Size of header stack type should be a constant", left);
             return false;
         }
         if (!rs->sizeKnown()) {
-            ::error("%1%: Size of header stack type should be a constant", right);
+            ::error(ErrorType::ERR_TYPE_ERROR,
+                    "%1%: Size of header stack type should be a constant", right);
             return false;
         }
         return equivalent(ls->elementType, rs->elementType) &&
@@ -263,6 +265,9 @@ bool TypeMap::equivalent(const IR::Type* left, const IR::Type* right) {
 bool TypeMap::implicitlyConvertibleTo(const IR::Type* from, const IR::Type* to) {
     if (TypeMap::equivalent(from, to))
         return true;
+    if (from->is<IR::Type_InfInt>() && to->is<IR::Type_InfInt>())
+        // this case is not caught by the equivalence check
+        return true;
     // We allow implicit casts from tuples to structs
     if (from->is<IR::Type_StructLike>()) {
         if (to->is<IR::Type_Tuple>()) {
@@ -281,7 +286,6 @@ bool TypeMap::implicitlyConvertibleTo(const IR::Type* from, const IR::Type* to) 
     }
     return false;
 }
-
 
 // Used for tuples and stacks only
 const IR::Type* TypeMap::getCanonical(const IR::Type* type) {
@@ -302,5 +306,39 @@ const IR::Type* TypeMap::getCanonical(const IR::Type* type) {
     return type;
 }
 
+int TypeMap::minWidthBits(const IR::Type* type, const IR::Node* errorPosition) {
+    CHECK_NULL(type);
+    auto t = getTypeType(type, true);
+    if (auto tb = t->to<IR::Type_Bits>()) {
+        return tb->width_bits();
+    } else if (auto ts = t->to<IR::Type_StructLike>()) {
+        int result = 0;
+        bool isUnion = t->is<IR::Type_HeaderUnion>();
+        for (auto f : ts->fields) {
+            int w = minWidthBits(f->type, errorPosition);
+            if (w < 0)
+                return w;
+            if (isUnion)
+                result = std::max(w, result);
+            else
+                result = result + w;
+        }
+        return result;
+    } else if (auto ths = t->to<IR::Type_Stack>()) {
+        auto w = minWidthBits(ths->elementType, errorPosition);
+        return w * ths->getSize();
+    } else if (auto te = t->to<IR::Type_SerEnum>()) {
+        return minWidthBits(te->type, errorPosition);
+    } else if (t->is<IR::Type_Boolean>()) {
+        return 1;
+    } else if (auto tnt = t->to<IR::Type_Newtype>()) {
+        return minWidthBits(tnt->type, errorPosition);
+    } else if (type->is<IR::Type_Varbits>()) {
+        return 0;
+    }
+
+    ::error(ErrorType::ERR_UNSUPPORTED, "%1%: width not well-defined", errorPosition);
+    return -1;
+}
 
 }  // namespace P4

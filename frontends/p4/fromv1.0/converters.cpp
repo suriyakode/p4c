@@ -20,6 +20,7 @@ limitations under the License.
 #include "lib/gmputil.h"
 #include "frontends/p4/coreLibrary.h"
 #include "frontends/common/constantFolding.h"
+#include "frontends/common/options.h"
 #include "frontends/p4-14/header_type.h"
 #include "frontends/p4-14/typecheck.h"
 
@@ -44,7 +45,7 @@ const IR::Node* ExpressionConverter::postorder(IR::Mask* expression) {
     auto cst = expression->right->to<IR::Constant>();
     mpz_class value = cst->value;
     if (value == 0) {
-        ::warning("%1%: zero mask", expression->right);
+        ::warning(ErrorType::WARN_INVALID, "%1%: zero mask", expression->right);
         return cst;
     }
     auto range = Util::findOnes(value);
@@ -150,12 +151,20 @@ const IR::Node* ExpressionConverter::postorder(IR::PathExpression *ref) {
 const IR::Node* ExpressionConverter::postorder(IR::ConcreteHeaderRef* nhr) {
     const IR::Expression* ref;
     if (structure->isHeader(nhr)) {
-        ref = structure->conversionContext.header->clone();
+        if (nhr->type->is<IR::Type_Header>()) {
+            auto type = nhr->type->to<IR::Type_Header>();
+            if (structure->systemHeaderTypes.count(type->name)) {
+                auto path = new IR::Path(nhr->ref->name);
+                auto result = new IR::PathExpression(nhr->srcInfo, nhr->type, path);
+                return result;
+            }
+        }
+        ref = structure->conversionContext->header->clone();
     } else {
         if (nhr->ref->name == P4V1::V1Model::instance.standardMetadata.name)
-            return structure->conversionContext.standardMetadata->clone();
+            return structure->conversionContext->standardMetadata->clone();
         else
-            ref = structure->conversionContext.userMetadata->clone();
+            ref = structure->conversionContext->userMetadata->clone();
     }
     auto result = new IR::Member(nhr->srcInfo, ref, nhr->ref->name);
     result->type = nhr->type;
@@ -332,13 +341,7 @@ const IR::Node* StatementConverter::preorder(IR::Primitive* primitive) {
         auto instanceName = ::get(renameMap, control->name);
         auto ctrl = new IR::PathExpression(IR::ID(instanceName));
         auto method = new IR::Member(ctrl, IR::ID(IR::IApply::applyMethodName));
-        auto args = new IR::Vector<IR::Argument>();
-        args->push_back(new IR::Argument(
-            structure->conversionContext.header->clone()));
-        args->push_back(new IR::Argument(
-            structure->conversionContext.userMetadata->clone()));
-        args->push_back(new IR::Argument(
-            structure->conversionContext.standardMetadata->clone()));
+        auto args = structure->createApplyArguments(control->name);
         auto call = new IR::MethodCallExpression(primitive->srcInfo, method, args);
         auto stat = new IR::MethodCallStatement(primitive->srcInfo, call);
         return stat;
@@ -392,6 +395,34 @@ const IR::Type_Varbits *TypeConverter::postorder(IR::Type_Varbits *vbtype) {
     return vbtype;
 }
 
+namespace {
+
+/// Checks that all references in a header length expression
+/// are to fields prior to the varbit field.
+class ValidateLenExpr : public Inspector {
+    std::set<cstring> prior;
+    const IR::StructField* varbitField;
+
+ public:
+    ValidateLenExpr(const IR::Type_StructLike* headerType, const IR::StructField* varbitField):
+            varbitField(varbitField) {
+        for (auto f : headerType->fields) {
+            if (f->name.name == varbitField->name.name)
+                break;
+            prior.emplace(f->name);
+        }
+    }
+    void postorder(const IR::PathExpression* expression) override {
+        BUG_CHECK(!expression->path->absolute, "%1%: absolute path", expression);
+        cstring name = expression->path->name.name;
+        if (prior.find(name) == prior.end())
+            ::error("%1%: header length must depend only on fields prior to the varbit field %2%",
+                    expression, varbitField);
+    }
+};
+
+}  // namespace
+
 const IR::StructField *TypeConverter::postorder(IR::StructField *field) {
     if (!field->type->is<IR::Type_Varbits>()) return field;
     // given a struct with length and max_length, the
@@ -400,6 +431,8 @@ const IR::StructField *TypeConverter::postorder(IR::StructField *field) {
         if (auto len = type->getAnnotation("length")) {
             if (len->expr.size() == 1) {
                 auto lenexpr = len->expr[0];
+                ValidateLenExpr vle(type, field);
+                lenexpr->apply(vle);
                 auto scale = new IR::Mul(lenexpr->srcInfo, lenexpr, new IR::Constant(8));
                 auto fieldlen = new IR::Sub(
                     scale->srcInfo, scale, new IR::Constant(type->width_bits()));
@@ -467,7 +500,7 @@ class FixupExtern : public Modifier {
 const IR::Type_Extern *ExternConverter::convertExternType(ProgramStructure *structure,
             const IR::Type_Extern *ext, cstring name) {
     if (!ext->attributes.empty())
-        warning("%s: P4_14 extern type not fully supported", ext);
+        warning(ErrorType::WARN_UNSUPPORTED, "%s: P4_14 extern type not fully supported", ext);
     return ext->apply(FixupExtern(structure, name))->to<IR::Type_Extern>();
 }
 
@@ -478,7 +511,7 @@ const IR::Declaration_Instance *ExternConverter::convertExternInstance(ProgramSt
     auto *et = rv->type->to<IR::Type_Extern>();
     BUG_CHECK(et, "Extern %s is not extern type, but %s", ext, ext->type);
     if (!ext->properties.empty())
-        warning("%s: P4_14 extern not fully supported", ext);
+        warning(ErrorType::WARN_UNSUPPORTED, "%s: P4_14 extern not fully supported", ext);
     if (structure->extern_remap.count(et))
         et = structure->extern_remap.at(et);
     rv->name = name;
@@ -580,8 +613,9 @@ class DiscoverStructure : public Inspector {
     explicit DiscoverStructure(ProgramStructure* structure) : structure(structure)
     { CHECK_NULL(structure); setName("DiscoverStructure"); }
 
-    void postorder(const IR::ParserException* ex) override
-    { ::warning("%1%: parser exception is not translated to P4-16", ex); }
+    void postorder(const IR::ParserException* ex) override {
+        ::warning(ErrorType::WARN_UNSUPPORTED, "%1%: parser exception is not translated to P4-16",
+                  ex); }
     void postorder(const IR::Metadata* md) override
     { structure->metadata.emplace(md); checkReserved(md, md->name, "metadata"); }
     void postorder(const IR::Header* hd) override
@@ -1089,26 +1123,6 @@ class DetectDuplicates: public Inspector {
     }
 };
 
-// The fields in standard_metadata in v1model.p4 should only be used if
-// the source program is written in P4-16. Therefore we remove those
-// fields from the translated P4-14 program.
-class RemoveAnnotatedFields : public Transform {
- public:
-    RemoveAnnotatedFields() { setName("RemoveAnnotatedFields"); }
-    const IR::Node* postorder(IR::Type_Struct* node) override {
-        if (node->name == "standard_metadata_t") {
-            auto fields = new IR::IndexedVector<IR::StructField>();
-            for (auto f : node->fields) {
-                if (!f->getAnnotation("alias")) {
-                    fields->push_back(f);
-                }
-            }
-            return new IR::Type_Struct(node->srcInfo, node->name, node->annotations, *fields);
-        }
-        return node;
-    }
-};
-
 // If a parser state has a pragma @packet_entry, it is treated as a new entry
 // point to the parser.
 class CheckIfMultiEntryPoint: public Inspector {
@@ -1135,7 +1149,7 @@ class CheckIfMultiEntryPoint: public Inspector {
 // does not use the @packet_entry pragma.
 class InsertCompilerGeneratedStartState: public Transform {
     ProgramStructure* structure;
-    IR::IndexedVector<IR::Node>        allTypeDecls;
+    IR::Vector<IR::Node>               allTypeDecls;
     IR::IndexedVector<IR::Declaration> varDecls;
     IR::Vector<IR::SelectCase>         selCases;
     cstring newStartState;
@@ -1212,9 +1226,9 @@ class InsertCompilerGeneratedStartState: public Transform {
     }
 };
 
-// Handle @packet_entry pragma in P4-14. A P4-14 program may be extended to
-// support multiple entry points to the parser. This feature does not comply
-// with P4-14 specification, but it is useful in certain use cases.
+/// Handle @packet_entry pragma in P4-14. A P4-14 program may be extended to
+/// support multiple entry points to the parser. This feature does not comply
+/// with P4-14 specification, but it is useful in certain use cases.
 class FixMultiEntryPoint : public PassManager {
  public:
     explicit FixMultiEntryPoint(ProgramStructure* structure) {
@@ -1224,9 +1238,114 @@ class FixMultiEntryPoint : public PassManager {
     }
 };
 
+/**
+   If the user metadata structure has a fields called
+   "intrinsic_metadata" or "queueing_metadata" move all their fields
+   to the standard_metadata Change all references appropriately.  We
+   do this because the intrinsic_metadata and queueing_metadata are
+   handled specially in P4-14 programs - much more like
+   standard_metadata.
+*/
+class MoveIntrinsicMetadata : public Transform {
+    ProgramStructure* structure;
+    const IR::Type_Struct* stdType = nullptr;
+    const IR::Type_Struct* userType = nullptr;
+    const IR::Type_Struct* intrType = nullptr;
+    const IR::Type_Struct* queueType = nullptr;
+    const IR::StructField* intrField = nullptr;
+    const IR::StructField* queueField = nullptr;
+
+ public:
+    explicit MoveIntrinsicMetadata(ProgramStructure* structure): structure(structure)
+    { CHECK_NULL(structure); setName("MoveIntrinsicMetadata"); }
+    const IR::Node* preorder(IR::P4Program* program) override {
+        stdType = program->getDeclsByName(
+            structure->v1model.standardMetadataType.name)->single()->to<IR::Type_Struct>();
+        userType = program->getDeclsByName(
+            structure->v1model.metadataType.name)->single()->to<IR::Type_Struct>();
+        CHECK_NULL(stdType);
+        CHECK_NULL(userType);
+        intrField = userType->getField(structure->v1model.intrinsicMetadata.name);
+        if (intrField != nullptr) {
+            auto intrTypeName = intrField->type;
+            auto tn = intrTypeName->to<IR::Type_Name>();
+            BUG_CHECK(tn, "%1%: expected a Type_Name", intrTypeName);
+            auto nt = program->getDeclsByName(tn->path->name)->nextOrDefault();
+            if (nt == nullptr || !nt->is<IR::Type_Struct>()) {
+                ::error("%1%: expected a structure", tn);
+                return program;
+            }
+            intrType = nt->to<IR::Type_Struct>();
+            LOG2("Intrinsic metadata type " << intrType);
+        }
+
+        queueField = userType->getField(structure->v1model.queueingMetadata.name);
+        if (queueField != nullptr) {
+            auto queueTypeName = queueField->type;
+            auto tn = queueTypeName->to<IR::Type_Name>();
+            BUG_CHECK(tn, "%1%: expected a Type_Name", queueTypeName);
+            auto nt = program->getDeclsByName(tn->path->name)->nextOrDefault();
+            if (nt == nullptr || !nt->is<IR::Type_Struct>()) {
+                ::error("%1%: expected a structure", tn);
+                return program;
+            }
+            queueType = nt->to<IR::Type_Struct>();
+            LOG2("Queueing metadata type " << queueType);
+        }
+        return program;
+    }
+
+    const IR::Node* postorder(IR::Type_Struct* type) override {
+        if (getOriginal() == stdType) {
+            if (intrType != nullptr) {
+                for (auto f : intrType->fields) {
+                    if (type->fields.getDeclaration(f->name) == nullptr) {
+                        ::error("%1%: no such field in standard_metadata", f->name);
+                        LOG2("standard_metadata: " << type);
+                    }
+                }
+            }
+            if (queueType != nullptr) {
+                for (auto f : queueType->fields) {
+                    if (type->fields.getDeclaration(f->name) == nullptr) {
+                        ::error("%1%: no such field in standard_metadata", f->name);
+                        LOG2("standard_metadata: " << type);
+                    }
+                }
+            }
+        }
+        return type;
+    }
+
+    const IR::Node* postorder(IR::StructField* field) override {
+        if (getOriginal() == intrField || getOriginal() == queueField)
+            // delete it from its parent
+            return nullptr;
+        return field;
+    }
+
+    const IR::Node* postorder(IR::Member* member) override {
+        // We rewrite expressions like meta.intrinsic_metadata.x as
+        // standard_metadata.x.  We know that these parameter names
+        // are always the same.
+        if (member->member != structure->v1model.intrinsicMetadata.name &&
+            member->member != structure->v1model.queueingMetadata.name)
+            return member;
+        auto pe = member->expr->to<IR::PathExpression>();
+        if (pe == nullptr || pe->path->absolute)
+            return member;
+        if (pe->path->name == structure->v1model.parser.metadataParam.name) {
+            LOG2("Renaming reference " << member);
+            return new IR::PathExpression(
+                new IR::Path(member->expr->srcInfo,
+                             IR::ID(pe->path->name.srcInfo,
+                                    structure->v1model.standardMetadata.name)));
+        }
+        return member;
+    }
+};
+
 }  // namespace
-
-
 
 ///////////////////////////////////////////////////////////////
 
@@ -1234,11 +1353,19 @@ static ProgramStructure *defaultCreateProgramStructure() {
     return new ProgramStructure();
 }
 
+static ConversionContext *defaultCreateConversionContext() {
+    return new ConversionContext();
+}
+
 ProgramStructure *(*Converter::createProgramStructure)() = defaultCreateProgramStructure;
+
+ConversionContext *(*Converter::createConversionContext)() = defaultCreateConversionContext;
 
 Converter::Converter() {
     setStopOnError(true); setName("Converter");
     structure = createProgramStructure();
+    structure->conversionContext = createConversionContext();
+    structure->conversionContext->clear();
     structure->populateOutputNames();
 
     // Discover types using P4-14 type-checker
@@ -1253,8 +1380,10 @@ Converter::Converter() {
     passes.emplace_back(new ComputeTableCallGraph(structure));
     passes.emplace_back(new Rewriter(structure));
     passes.emplace_back(new FixExtracts(structure));
-    passes.emplace_back(new RemoveAnnotatedFields);
-    passes.emplace_back(new FixMultiEntryPoint(structure));
+    if (P4CContext::get().options().enable_intrinsic_metadata_fix()) {
+        passes.emplace_back(new FixMultiEntryPoint(structure));
+        passes.emplace_back(new MoveIntrinsicMetadata(structure));
+    }
 }
 
 Visitor::profile_t Converter::init_apply(const IR::Node* node) {

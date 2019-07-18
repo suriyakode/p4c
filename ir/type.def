@@ -76,7 +76,7 @@ class Type_State : Type_Base {
     dbprint { out << "state"; }
 }
 
-/// Represents both bit<> and int<> types in P4 v1.1+
+/// Represents both bit<> and int<> types in P4-14 and P4-16
 class Type_Bits : Type_Base {
     optional int size;
     NullOK optional Expression expression; // only used temporarily
@@ -169,7 +169,8 @@ class Type_InfInt : Type, ITypeVar {
     dbprint { out << "int/" << declid; }
     toString { return "int"; }
     operator== { return declid == a.declid; }
-    const Type* getP4Type() const override { return nullptr; }
+    equiv { return true; /* ignore declid */ }
+    const Type* getP4Type() const override { return this; }
 }
 
 class Type_Dontcare : Type_Base {
@@ -223,6 +224,8 @@ class StructField : Declaration, IAnnotated {
 }
 
 abstract Type_StructLike : Type_Declaration, ISimpleNamespace, IAnnotated {
+    static const cstring minSizeInBits;
+    static const cstring minSizeInBytes;
     optional Annotations                        annotations = Annotations::empty;
     optional inline IndexedVector<StructField>  fields;
     Annotations getAnnotations() const override { return annotations; }
@@ -246,6 +249,13 @@ abstract Type_StructLike : Type_Declaration, ISimpleNamespace, IAnnotated {
 class Type_Struct : Type_StructLike {
 #nodbprint
     toString{ return cstring("struct ") + externalName(); }
+}
+
+/// This is the type of a struct-valued expression whose
+/// exact struct type is yet unknown; we only know the field names
+/// and some information about their types.
+class Type_UnknownStruct : Type_StructLike {
+#nodbprint
 }
 
 class Type_HeaderUnion : Type_StructLike {

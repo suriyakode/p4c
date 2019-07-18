@@ -118,6 +118,7 @@ abstract Declaration : StatOrDecl, IDeclaration {
     ID          name;
     int declid = nextId++;
     ID getName() const override { return name; }
+    equiv { return name == a.name; /* ignore declid */ }
  private:
     static int nextId;
  public:
@@ -133,6 +134,7 @@ abstract Type_Declaration : Type, IDeclaration {
     ID name;
     int declid = nextId++;
     ID getName() const override { return name; }
+    equiv { return name == a.name; /* ignore declid */ }
  private:
     static int nextId;
  public:
@@ -250,6 +252,8 @@ class Annotation {
     static const cstring optionalAnnotation;  /// Optional parameter annotation
     static const cstring pkginfoAnnotation;  /// Package documentation annotation.
     static const cstring deprecatedAnnotation;  /// Deprecation annotation.
+    static const cstring synchronousAnnotation;  /// Synchronous annotation.
+    static const cstring matchAnnotation;  /// Match annotation (for value sets).
     toString{ return cstring("@") + name; }
     validate{
         BUG_CHECK(!name.name.isNullOrEmpty(), "empty annotation name");

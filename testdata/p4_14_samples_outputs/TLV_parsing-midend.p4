@@ -7,10 +7,8 @@ header ipv4_option_timestamp_t_1 {
 #include <v1model.p4>
 
 struct intrinsic_metadata_t {
-    bit<4>  mcast_grp;
-    bit<4>  egress_rid;
-    bit<16> mcast_hash;
-    bit<32> lf_field_list;
+    bit<4> mcast_grp;
+    bit<4> egress_rid;
 }
 
 struct my_metadata_t {
@@ -60,10 +58,7 @@ header ipv4_option_NOP_t {
 }
 
 struct metadata {
-    @name(".intrinsic_metadata") 
-    intrinsic_metadata_t intrinsic_metadata;
-    @name(".my_metadata") 
-    my_metadata_t        my_metadata;
+    bit<8> _my_metadata_parse_ipv4_counter0;
 }
 
 struct headers {
@@ -95,7 +90,7 @@ parser ParserImpl(packet_in packet, out headers hdr, inout metadata meta, inout 
     }
     @name(".parse_ipv4") state parse_ipv4 {
         packet.extract<ipv4_base_t>(hdr.ipv4_base);
-        meta.my_metadata.parse_ipv4_counter = (bit<8>)((hdr.ipv4_base.ihl << 2) + 4w12);
+        meta._my_metadata_parse_ipv4_counter0 = (bit<8>)((hdr.ipv4_base.ihl << 2) + 4w12);
         transition select(hdr.ipv4_base.ihl) {
             4w0x5: accept;
             default: parse_ipv4_options;
@@ -103,17 +98,17 @@ parser ParserImpl(packet_in packet, out headers hdr, inout metadata meta, inout 
     }
     @name(".parse_ipv4_option_EOL") state parse_ipv4_option_EOL {
         packet.extract<ipv4_option_EOL_t>(hdr.ipv4_option_EOL.next);
-        meta.my_metadata.parse_ipv4_counter = meta.my_metadata.parse_ipv4_counter + 8w255;
+        meta._my_metadata_parse_ipv4_counter0 = meta._my_metadata_parse_ipv4_counter0 + 8w255;
         transition parse_ipv4_options;
     }
     @name(".parse_ipv4_option_NOP") state parse_ipv4_option_NOP {
         packet.extract<ipv4_option_EOL_t>(hdr.ipv4_option_NOP.next);
-        meta.my_metadata.parse_ipv4_counter = meta.my_metadata.parse_ipv4_counter + 8w255;
+        meta._my_metadata_parse_ipv4_counter0 = meta._my_metadata_parse_ipv4_counter0 + 8w255;
         transition parse_ipv4_options;
     }
     @name(".parse_ipv4_option_security") state parse_ipv4_option_security {
         packet.extract<ipv4_option_security_t>(hdr.ipv4_option_security);
-        meta.my_metadata.parse_ipv4_counter = meta.my_metadata.parse_ipv4_counter + 8w245;
+        meta._my_metadata_parse_ipv4_counter0 = meta._my_metadata_parse_ipv4_counter0 + 8w245;
         transition parse_ipv4_options;
     }
     @name(".parse_ipv4_option_timestamp") state parse_ipv4_option_timestamp {
@@ -123,12 +118,12 @@ parser ParserImpl(packet_in packet, out headers hdr, inout metadata meta, inout 
         tmp.len = tmp_1[7:0];
         tmp_hdr_0 = tmp;
         packet.extract<ipv4_option_timestamp_t>(hdr.ipv4_option_timestamp, ((bit<32>)tmp_hdr_0.len << 3) + 32w4294967280);
-        meta.my_metadata.parse_ipv4_counter = meta.my_metadata.parse_ipv4_counter - hdr.ipv4_option_timestamp.len;
+        meta._my_metadata_parse_ipv4_counter0 = meta._my_metadata_parse_ipv4_counter0 - hdr.ipv4_option_timestamp.len;
         transition parse_ipv4_options;
     }
     @name(".parse_ipv4_options") state parse_ipv4_options {
         tmp_0 = packet.lookahead<bit<8>>();
-        transition select(meta.my_metadata.parse_ipv4_counter, tmp_0[7:0]) {
+        transition select(meta._my_metadata_parse_ipv4_counter0, tmp_0[7:0]) {
             (8w0x0 &&& 8w0xff, 8w0x0 &&& 8w0x0): accept;
             (8w0x0 &&& 8w0x0, 8w0x0 &&& 8w0xff): parse_ipv4_option_EOL;
             (8w0x0 &&& 8w0x0, 8w0x1 &&& 8w0xff): parse_ipv4_option_NOP;

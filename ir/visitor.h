@@ -125,14 +125,21 @@ class Visitor {
             ctxt->child_index = cidx; }
         v.parallel_visit_children(*this); }
 
+    virtual Visitor *clone() const { BUG("need %s::clone method",  name()); return nullptr; }
+
     // Functions for IR visit_children to call for ControlFlowVisitors.
     virtual Visitor &flow_clone() { return *this; }
-    virtual void flow_dead() { }
 
     /** Merge the given visitor into this visitor at a joint point in the
      * control flow graph.  Should update @this and leave the other unchanged.
      */
     virtual void flow_merge(Visitor &) { }
+    /** Support methods for non-local ControlFlow computations */
+    virtual void flow_merge_global_to(cstring) { }
+    virtual void flow_merge_global_from(cstring) { }
+    virtual void erase_global(cstring) { }
+    virtual bool check_global(cstring) { return false; }
+    virtual void clear_globals() { }
 
     static cstring demangle(const char *);
     virtual const char *name() const {
@@ -312,8 +319,10 @@ class Transform : public virtual Visitor {
 
 class ControlFlowVisitor : public virtual Visitor {
     std::map<const IR::Node *, std::pair<ControlFlowVisitor *, int>> *flow_join_points = 0;
+    std::map<cstring, ControlFlowVisitor &>     &globals;
+
  protected:
-    virtual ControlFlowVisitor *clone() const = 0;
+    ControlFlowVisitor* clone() const override = 0;
     void init_join_flows(const IR::Node *root) override;
     bool join_flows(const IR::Node *n) override;
 
@@ -324,6 +333,30 @@ class ControlFlowVisitor : public virtual Visitor {
      */
     virtual bool filter_join_point(const IR::Node *) { return false; }
     ControlFlowVisitor &flow_clone() override;
+    ControlFlowVisitor() : globals(*new std::map<cstring, ControlFlowVisitor &>) {}
+
+ public:
+    void flow_merge_global_to(cstring key) override {
+        if (globals.count(key))
+            globals.at(key).flow_merge(*this);
+        else
+            globals.emplace(key, flow_clone()); }
+    void flow_merge_global_from(cstring key) override {
+        if (globals.count(key)) flow_merge(globals.at(key)); }
+    void erase_global(cstring key) override { globals.erase(key); }
+    bool check_global(cstring key) override { return globals.count(key) != 0; }
+    void clear_globals() override { globals.clear(); }
+
+    /// RAII class to ensure global key is only used in one place
+    class GuardGlobal {
+        Visitor &self;
+        cstring key;
+
+     public:
+        GuardGlobal(Visitor &self, cstring key) : self(self), key(key) {
+            BUG_CHECK(!self.check_global(key), "ControlFlowVisitor global %s in use", key); }
+        ~GuardGlobal() { self.erase_global(key); }
+    };
 };
 
 class Backtrack : public virtual Visitor {

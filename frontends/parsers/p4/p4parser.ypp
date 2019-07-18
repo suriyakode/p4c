@@ -869,12 +869,13 @@ baseType
     : BOOL   { $$ = IR::Type_Boolean::get(); }
     | ERROR  { $$ = new IR::Type_Name(@1, new IR::Path(IR::ID(@1, "error"))); }
     | BIT    { $$ = IR::Type::Bits::get(@1, 1); }
+    | INT    { $$ = new IR::Type_InfInt(); }
     | BIT "<" INTEGER ">"
-      { $$ = IR::Type::Bits::get(@1+@4, parseConstant(@3, $3, 0)->asInt(), false); }
+      { $$ = IR::Type::Bits::get(@1+@4, parseConstantChecked(@3, $3), false); }
     | INT "<" INTEGER ">"
-      { $$ = IR::Type::Bits::get(@1+@4, parseConstant(@3, $3, 0)->asInt(), true); }
+      { $$ = IR::Type::Bits::get(@1+@4, parseConstantChecked(@3, $3), true); }
     | VARBIT "<" INTEGER ">"
-      { $$ = IR::Type::Varbits::get(@1+@4, parseConstant(@3, $3, 0)->asInt()); }
+      { $$ = IR::Type::Varbits::get(@1+@4, parseConstantChecked(@3, $3)); }
 
     | BIT "<" "(" expression ")" ">"
       { $$ = new IR::Type_Bits(@1+@6, $4, false); }
@@ -904,8 +905,9 @@ typeParameterList
 
 typeArg
     : typeRef                     { $$ = $1; }
-    | nonTypeName                      { $$ = new IR::Type_Name(@1, new IR::Path(*$1)); }
+    | nonTypeName                 { $$ = new IR::Type_Name(@1, new IR::Path(*$1)); }
         // This is necessary because template arguments may introduce the return type
+    | VOID                        { $$ = IR::Type_Void::get(); }
     | "_"                         { $$ = new IR::Type_Dontcare(@1); }
     ;
 
@@ -917,6 +919,7 @@ typeArgumentList
 
 realTypeArg
     : typeRef                     { $$ = $1; }
+    | VOID                        { $$ = IR::Type_Void::get(); }
     | "_"                         { $$ = new IR::Type_Dontcare(@1); }
     ;
 
@@ -975,7 +978,7 @@ enumDeclaration
         "{" identifierList "}" { $$ = new IR::Type_Enum(@3, *$3, *$6); }
     | optAnnotations ENUM BIT "<" INTEGER ">" name { driver.structure->declareType(*$7); }
         "{" specifiedIdentifierList "}" {
-            auto type = IR::Type::Bits::get(@3+@6, parseConstant(@5, $5, 0)->asInt());
+            auto type = IR::Type::Bits::get(@3+@6, parseConstantChecked(@5, $5));
             $$ = new IR::Type_SerEnum(@7, *$7, type, *$10); }
     ;
 
@@ -1288,6 +1291,9 @@ expression
     | expression "[" expression "]"      { $$ = new IR::ArrayIndex(@1 + @4, $1, $3); }
     | expression "[" expression ":" expression "]" { $$ = new IR::Slice(@1 + @6, $1, $3, $5); }
     | "{" expressionList "}"             { $$ = new IR::ListExpression(@1 + @3, *$2); }
+| typeName "{" kvList "}"                { $$ = new IR::StructInitializerExpression(@1 + @4, IR::Type::Unknown::get(), $1, *$3); }  // experimental
+    | "{" kvList "}"                     { $$ = new IR::StructInitializerExpression(
+                                                  @1 + @3, IR::Type::Unknown::get(), (IR::Type_Name*)nullptr, *$2); }  // experimental
     | "(" expression ")"                 { $$ = $2; }
     | "!" expression %prec PREFIX        { $$ = new IR::LNot(@1 + @2, $2); }
     | "~" expression %prec PREFIX        { $$ = new IR::Cmpl(@1 + @2, $2); }

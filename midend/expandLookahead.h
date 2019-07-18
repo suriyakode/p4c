@@ -24,26 +24,35 @@ limitations under the License.
 
 namespace P4 {
 
-// Given an assignment like
-// a = lookahead<T>();
-// this is transformed into
-// bit<X> tmp = lookahead<sizeof<T>>();
-// a = { tmp[f1,f0], tmp[f2, f1+1], ... }
+/// Given an assignment like
+/// a = lookahead<T>();
+/// this is transformed into
+/// bit<X> tmp = lookahead<sizeof<T>>();
+/// a = { tmp[f1,f0], tmp[f2, f1+1], ... }
 class DoExpandLookahead : public Transform {
     P4::ReferenceMap* refMap;
     P4::TypeMap* typeMap;
     IR::IndexedVector<IR::Declaration> newDecls;
 
+    struct ExpansionInfo {
+        const IR::Statement* statement;
+        unsigned width;
+        const IR::Type* origType;
+        const IR::PathExpression* tmp;  // temporary used for result
+    };
+
     const IR::Expression* expand(
         const IR::PathExpression* base, const IR::Type* type, unsigned* offset);
     void expandSetValid(const IR::Expression* base, const IR::Type* type,
                         IR::IndexedVector<IR::StatOrDecl>* output);
+    ExpansionInfo* convertLookahead(const IR::MethodCallExpression* expression);
 
  public:
     DoExpandLookahead(ReferenceMap* refMap, TypeMap* typeMap) :
             refMap(refMap), typeMap(typeMap) {
         CHECK_NULL(refMap); CHECK_NULL(typeMap); setName("DoExpandLookahead"); }
     const IR::Node* postorder(IR::AssignmentStatement* statement) override;
+    const IR::Node* postorder(IR::MethodCallStatement* statement) override;
     const IR::Node* preorder(IR::P4Control* control) override
     { prune(); return control; }
     const IR::Node* preorder(IR::P4Parser* parser) override
@@ -57,8 +66,11 @@ class DoExpandLookahead : public Transform {
 
 class ExpandLookahead : public PassManager {
  public:
-    ExpandLookahead(ReferenceMap* refMap, TypeMap* typeMap) {
-        passes.push_back(new TypeChecking(refMap, typeMap));
+    ExpandLookahead(ReferenceMap* refMap, TypeMap* typeMap,
+            TypeChecking* typeChecking = nullptr) {
+        if (!typeChecking)
+            typeChecking = new TypeChecking(refMap, typeMap);
+        passes.push_back(typeChecking);
         passes.push_back(new DoExpandLookahead(refMap, typeMap));
         setName("ExpandLookahead");
     }

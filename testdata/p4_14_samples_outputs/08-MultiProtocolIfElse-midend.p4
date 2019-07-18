@@ -72,8 +72,9 @@ header vlan_tag_t {
 }
 
 struct metadata {
-    @name(".ing_metadata") 
-    ingress_metadata_t ing_metadata;
+    bit<1> _ing_metadata_drop0;
+    bit<8> _ing_metadata_egress_port1;
+    bit<4> _ing_metadata_packet_type2;
 }
 
 struct headers {
@@ -163,13 +164,13 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
     @name(".nop") action nop_4() {
     }
     @name(".set_egress_port") action set_egress_port(bit<8> egress_port) {
-        meta.ing_metadata.egress_port = egress_port;
+        meta._ing_metadata_egress_port1 = egress_port;
     }
     @name(".set_egress_port") action set_egress_port_3(bit<8> egress_port) {
-        meta.ing_metadata.egress_port = egress_port;
+        meta._ing_metadata_egress_port1 = egress_port;
     }
     @name(".set_egress_port") action set_egress_port_4(bit<8> egress_port) {
-        meta.ing_metadata.egress_port = egress_port;
+        meta._ing_metadata_egress_port1 = egress_port;
     }
     @name(".ipv4_match") table ipv4_match_0 {
         actions = {
@@ -205,13 +206,13 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
         default_action = NoAction_5();
     }
     apply {
-        if (hdr.ethernet.etherType == 16w0x800) 
+        if (hdr.ethernet.etherType == 16w0x800) {
             ipv4_match_0.apply();
-        else 
-            if (hdr.ethernet.etherType == 16w0x86dd) 
-                ipv6_match_0.apply();
-            else 
-                l2_match_0.apply();
+        } else if (hdr.ethernet.etherType == 16w0x86dd) {
+            ipv6_match_0.apply();
+        } else {
+            l2_match_0.apply();
+        }
     }
 }
 

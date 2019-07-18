@@ -53,7 +53,8 @@ struct mystruct1_t {
 }
 
 struct metadata {
-    mystruct1_t mystruct1;
+    bit<4> _mystruct1_a0;
+    bit<4> _mystruct1_b1;
 }
 
 parser parserI(packet_in pkt, out headers hdr, inout metadata meta, inout standard_metadata_t stdmeta) {
@@ -118,12 +119,15 @@ control cIngress(inout headers hdr, inout metadata meta, inout standard_metadata
     }
     apply {
         tbl_act.apply();
-        if (stdmeta.checksum_error == 1w1) 
+        if (stdmeta.checksum_error == 1w1) {
             tbl_act_0.apply();
-        if (stdmeta.parser_error != error.NoError) 
+        }
+        if (stdmeta.parser_error != error.NoError) {
             tbl_act_1.apply();
-        if (hdr.ipv4.isValid()) 
+        }
+        if (hdr.ipv4.isValid()) {
             tbl_act_2.apply();
+        }
     }
 }
 

@@ -51,6 +51,18 @@ JsonObjects::JsonObjects() {
     field_aliases = insert_array_field(toplevel, "field_aliases");
 }
 
+Util::JsonArray*
+JsonObjects::get_field_list_contents(unsigned id) const {
+    for (auto e : *field_lists) {
+        auto obj = e->to<Util::JsonObject>();
+        auto val = obj->get("id")->to<Util::JsonValue>();
+        if (val != nullptr && val->isNumber() && val->getInt() == static_cast<int>(id)) {
+            return obj->get("elements")->to<Util::JsonArray>();
+        }
+    }
+    return nullptr;
+}
+
 Util::JsonObject*
 JsonObjects::find_object_by_name(Util::JsonArray* array, const cstring& name) {
     for (auto e : *array) {
@@ -241,7 +253,7 @@ JsonObjects::add_metadata(const cstring& type, const cstring& name) {
 
 void
 JsonObjects::add_header_stack(const cstring& type, const cstring& name,
-                              const unsigned size, std::vector<unsigned>& ids) {
+                              const unsigned size, const std::vector<unsigned>& ids) {
     auto stack = new Util::JsonObject();
     unsigned id = BMV2::nextId("stack");
     stack->emplace("name", name);
@@ -254,6 +266,23 @@ JsonObjects::add_header_stack(const cstring& type, const cstring& name,
         members->append(id);
     }
     header_stacks->append(stack);
+}
+
+void
+JsonObjects::add_header_union_stack(const cstring& type, const cstring& name,
+                                    const unsigned size, const std::vector<unsigned>& ids) {
+    auto stack = new Util::JsonObject();
+    unsigned id = BMV2::nextId("union_stack");
+    stack->emplace("name", name);
+    stack->emplace("id", id);
+    stack->emplace("union_type", type);
+    stack->emplace("size", size);
+    auto members = new Util::JsonArray();
+    stack->emplace("header_union_ids", members);
+    for (auto id : ids) {
+        members->append(id);
+    }
+    header_union_stacks->append(stack);
 }
 
 /// Add an error to json.
@@ -401,7 +430,7 @@ JsonObjects::add_extern_attribute(const cstring& name, const cstring& type,
 
 void
 JsonObjects::add_extern(const cstring& name, const cstring& type,
-                        Util::JsonArray*& attributes) {
+                        Util::JsonArray* attributes) {
     auto extn = new Util::JsonObject();
     unsigned id = BMV2::nextId("extern_instances");
     extn->emplace("name", name);

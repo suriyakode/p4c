@@ -2,10 +2,8 @@
 #include <v1model.p4>
 
 struct intrinsic_metadata_t {
-    bit<4>  mcast_grp;
-    bit<4>  egress_rid;
-    bit<16> mcast_hash;
-    bit<32> lf_field_list;
+    bit<4> mcast_grp;
+    bit<4> egress_rid;
 }
 
 header cpu_header_t {
@@ -20,8 +18,6 @@ header ethernet_t {
 }
 
 struct metadata {
-    @name(".intrinsic_metadata") 
-    intrinsic_metadata_t intrinsic_metadata;
 }
 
 struct headers {
@@ -54,7 +50,7 @@ control egress(inout headers hdr, inout metadata meta, inout standard_metadata_t
     @name(".NoAction") action NoAction_0() {
     }
     @name("._drop") action _drop() {
-        mark_to_drop();
+        mark_to_drop(standard_metadata);
     }
     @name(".do_cpu_encap") action do_cpu_encap() {
         hdr.cpu_header.setValid();

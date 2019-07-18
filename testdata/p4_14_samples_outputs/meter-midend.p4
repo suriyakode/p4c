@@ -2,10 +2,8 @@
 #include <v1model.p4>
 
 struct intrinsic_metadata_t {
-    bit<4>  mcast_grp;
-    bit<4>  egress_rid;
-    bit<16> mcast_hash;
-    bit<32> lf_field_list;
+    bit<4> mcast_grp;
+    bit<4> egress_rid;
 }
 
 struct meta_t {
@@ -19,10 +17,7 @@ header ethernet_t {
 }
 
 struct metadata {
-    @name(".intrinsic_metadata") 
-    intrinsic_metadata_t intrinsic_metadata;
-    @name(".meta") 
-    meta_t               meta;
+    bit<32> _meta_meter_tag0;
 }
 
 struct headers {
@@ -45,21 +40,22 @@ control egress(inout headers hdr, inout metadata meta, inout standard_metadata_t
     }
 }
 
+@name(".my_meter") meter(32w16384, MeterType.packets) my_meter;
+
 control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
     @name(".NoAction") action NoAction_0() {
     }
     @name(".NoAction") action NoAction_3() {
     }
-    @name(".my_meter") meter(32w16384, MeterType.packets) my_meter_0;
     @name("._drop") action _drop() {
-        mark_to_drop();
+        mark_to_drop(standard_metadata);
     }
     @name("._nop") action _nop() {
     }
     @name("._nop") action _nop_2() {
     }
     @name(".m_action") action m_action(bit<32> meter_idx) {
-        my_meter_0.execute_meter<bit<32>>(meter_idx, meta.meta.meter_tag);
+        my_meter.execute_meter<bit<32>>(meter_idx, meta._meta_meter_tag0);
         standard_metadata.egress_spec = 9w1;
     }
     @name(".m_filter") table m_filter_0 {
@@ -69,7 +65,7 @@ control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_
             @defaultonly NoAction_0();
         }
         key = {
-            meta.meta.meter_tag: exact @name("meta.meter_tag") ;
+            meta._meta_meter_tag0: exact @name("meta.meter_tag") ;
         }
         size = 16;
         default_action = NoAction_0();

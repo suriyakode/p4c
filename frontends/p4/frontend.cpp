@@ -61,6 +61,7 @@ limitations under the License.
 #include "uniqueNames.h"
 #include "unusedDeclarations.h"
 #include "uselessCasts.h"
+#include "validateMatchAnnotations.h"
 #include "validateParsedProgram.h"
 
 namespace P4 {
@@ -126,7 +127,7 @@ const IR::P4Program *FrontEnd::run(const CompilerOptions &options, const IR::P4P
 
     PassManager passes = {
         // Parse annotations
-        &parseAnnotations,
+        new ParseAnnotationBodies(&parseAnnotations, &typeMap),
         new PrettyPrint(options),
         // Simple checks on parsed program
         new ValidateParsedProgram(),
@@ -145,13 +146,14 @@ const IR::P4Program *FrontEnd::run(const CompilerOptions &options, const IR::P4P
         new Deprecated(&refMap),
         new CheckNamedArgs(),
         new TypeInference(&refMap, &typeMap, false),  // insert casts
+        new ValidateMatchAnnotations(&typeMap),
         new DefaultArguments(&refMap, &typeMap),  // add default argument values to parameters
         new BindTypeVariables(&refMap, &typeMap),
         new StructInitializers(&refMap, &typeMap),
         new TableKeyNames(&refMap, &typeMap),
         // Another round of constant folding, using type information.
         new ConstantFolding(&refMap, &typeMap),
-        new StrengthReduction(),
+        new StrengthReduction(&refMap, &typeMap),
         new UselessCasts(&refMap, &typeMap),
         new SimplifyControlFlow(&refMap, &typeMap),
         new FrontEndDump(),  // used for testing the program at this point

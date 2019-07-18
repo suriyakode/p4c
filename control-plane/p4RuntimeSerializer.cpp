@@ -39,6 +39,7 @@ limitations under the License.
 #include "frontends/p4/coreLibrary.h"
 #include "frontends/p4/evaluator/evaluator.h"
 #include "frontends/p4/externInstance.h"
+#include "frontends/p4/enumInstance.h"
 // TODO(antonin): this include should go away when we cleanup getMatchFields
 // and tableNeedsPriority implementations.
 #include "frontends/p4/fromv1.0/v1model.h"
@@ -52,11 +53,11 @@ limitations under the License.
 #include "lib/nullstream.h"
 #include "lib/ordered_set.h"
 #include "midend/removeParameters.h"
-#include "midend/flattenHeaders.h"
 
 #include "p4RuntimeSerializer.h"
 #include "p4RuntimeArchHandler.h"
 #include "p4RuntimeArchStandard.h"
+#include "flattenHeader.h"
 
 namespace p4v1 = ::p4::v1;
 namespace p4configv1 = ::p4::config::v1;
@@ -75,15 +76,6 @@ using Helpers::addDocumentation;
 using Helpers::setPreamble;
 
 static const p4rt_id_t INVALID_ID = p4configv1::P4Ids::UNSPECIFIED;
-
-// TODO(antonin): Here are the known issues:
-// - We don't currently distinguish between the case where the const default
-//   action has mutable params and the case where it doesn't.
-// - Locals are intentionally not exposed, but this prevents table match keys
-//   which involve complex expressions from working, because those expressions
-//   are desugared into a match against a local. This could be fixed just by
-//   exposing locals, but first we need to decide how it makes sense to expose
-//   this information to the control plane.
 
 /// @return true if @node has an @hidden annotation.
 static bool isHidden(const IR::Node* node) {
@@ -192,9 +184,12 @@ struct MatchField {
 
     const cstring name;       // The fully qualified external name of this field.
     const MatchType type;     // The match algorithm - exact, ternary, range, etc.
+    const cstring other_match_type;  // If the match type is an arch-specific one
+                                     // in this case, type must be MatchTypes::UNSPECIFIED
     const uint32_t bitwidth;  // How wide this field is.
     const IR::IAnnotated* annotations;  // If non-null, any annotations applied
                                         // to this field.
+    const cstring type_name;  // Optional field used when field is Type_Newtype.
 };
 
 struct ActionRef {
@@ -605,6 +600,77 @@ getActionRefs(const IR::P4Table* table, ReferenceMap* refMap) {
     return actions;
 }
 
+static cstring
+getMatchTypeName(const IR::PathExpression* matchPathExpr, const ReferenceMap* refMap) {
+    CHECK_NULL(matchPathExpr);
+    auto matchTypeDecl = refMap->getDeclaration(matchPathExpr->path, true)
+        ->to<IR::Declaration_ID>();
+    BUG_CHECK(matchTypeDecl != nullptr, "No declaration for match type '%1%'", matchPathExpr);
+    return matchTypeDecl->name.name;
+}
+
+/// maps the match type name to the corresponding P4Info MatchType enum
+/// member. If the match type should not be exposed to the control plane and
+/// should be ignored, boost::none is returned. If the match type does not
+/// correspond to any standard match type known to P4Info, default enum member
+/// UNSPECIFIED is returned.
+static boost::optional<MatchField::MatchType>
+getMatchType(cstring matchTypeName) {
+    if (matchTypeName == P4CoreLibrary::instance.exactMatch.name) {
+        return MatchField::MatchTypes::EXACT;
+    } else if (matchTypeName == P4CoreLibrary::instance.lpmMatch.name) {
+        return MatchField::MatchTypes::LPM;
+    } else if (matchTypeName == P4CoreLibrary::instance.ternaryMatch.name) {
+        return MatchField::MatchTypes::TERNARY;
+    } else if (matchTypeName == P4V1::V1Model::instance.rangeMatchType.name) {
+        return MatchField::MatchTypes::RANGE;
+    } else if (matchTypeName == P4V1::V1Model::instance.selectorMatchType.name) {
+        // Nothing to do here, we cannot even perform some sanity-checking.
+        return boost::none;
+    } else {
+        return MatchField::MatchTypes::UNSPECIFIED;
+    }
+}
+
+// P4Runtime defines sdnB as a 32-bit integer.
+// The APIs in this file for width use an int
+// Thus function returns a signed int.
+static int
+getTypeWidth(const IR::Type* type, TypeMap* typeMap) {
+    auto ann = type->getAnnotation("p4runtime_translation");
+    if (ann != nullptr) {
+        auto sdnB = ann->expr[1]->to<IR::Constant>();
+        if (!sdnB) {
+            ::error("P4runtime annotation in serializer does not have sdn: %1%",
+                    type);
+            return -1;
+        }
+        auto value = sdnB->value;
+        auto bitsRequired = static_cast<size_t>(mpz_sizeinbase(value.get_mpz_t(), 2));
+        if (bitsRequired > 31) {
+            ::error("Cannot represent %1% on 31 bits, require %2%", value.get_ui(),
+                    bitsRequired);
+            return -2;
+        }
+        return static_cast<int>(value.get_ui());
+    }
+    return typeMap->minWidthBits(type, type->getNode());
+}
+
+/*
+ * The function returns a cstring for use as type_name for a Type_Newtype.
+*/
+static cstring
+getTypeName(const IR::Type* type, TypeMap* typeMap) {
+    CHECK_NULL(type);
+
+    auto t = typeMap->getTypeType(type, true);
+    if (auto newt = t->to<IR::Type_Newtype>()) {
+        return newt->name;
+    }
+    return nullptr;
+}
+
 /// @return the header instance fields matched against by @table's key. The
 /// fields are represented as a (fully qualified field name, match type) tuple.
 static std::vector<MatchField>
@@ -615,31 +681,10 @@ getMatchFields(const IR::P4Table* table, ReferenceMap* refMap, TypeMap* typeMap)
     if (!key) return matchFields;
 
     for (auto keyElement : key->keyElements) {
-        auto matchTypeDecl = refMap->getDeclaration(keyElement->matchType->path, true)
-                                   ->to<IR::Declaration_ID>();
-        BUG_CHECK(matchTypeDecl != nullptr, "No declaration for match type '%1%'",
-                                            keyElement->matchType);
-        const auto matchTypeName = matchTypeDecl->name.name;
-
-        MatchField::MatchType matchType;
-        // TODO(antonin): remove v1model dependency and find a way to handle
-        // architecture-specific match types, which are supported by P4Runtime.
-        if (matchTypeName == P4CoreLibrary::instance.exactMatch.name) {
-            matchType = MatchField::MatchTypes::EXACT;
-        } else if (matchTypeName == P4CoreLibrary::instance.lpmMatch.name) {
-            matchType = MatchField::MatchTypes::LPM;
-        } else if (matchTypeName == P4CoreLibrary::instance.ternaryMatch.name) {
-            matchType = MatchField::MatchTypes::TERNARY;
-        } else if (matchTypeName == P4V1::V1Model::instance.rangeMatchType.name) {
-            matchType = MatchField::MatchTypes::RANGE;
-        } else if (matchTypeName == P4V1::V1Model::instance.selectorMatchType.name) {
-            // Nothing to do here, we cannot even perform some sanity-checking.
-            continue;
-        } else {
-            ::warning("Table '%1%': cannot represent match type '%2%' in P4Runtime, ignoring",
-                      table->controlPlaneName(), matchTypeName);
-            continue;
-        }
+        cstring type_name = nullptr;
+        auto matchTypeName = getMatchTypeName(keyElement->matchType, refMap);
+        auto matchType = getMatchType(matchTypeName);
+        if (matchType == boost::none) continue;
 
         auto matchFieldName = explicitNameAnnotation(keyElement);
         BUG_CHECK(bool(matchFieldName), "Table '%1%': Match field '%2%' has no "
@@ -649,10 +694,13 @@ getMatchFields(const IR::P4Table* table, ReferenceMap* refMap, TypeMap* typeMap)
           typeMap->getType(keyElement->expression->getNode(), true);
         BUG_CHECK(matchFieldType != nullptr,
                   "Couldn't determine type for key element %1%", keyElement);
-
-        matchFields.push_back(MatchField{*matchFieldName, matchType,
-                                         uint32_t(matchFieldType->width_bits()),
-                                         keyElement->to<IR::IAnnotated>()});
+        type_name = getTypeName(matchFieldType, typeMap);
+        int width = getTypeWidth(matchFieldType, typeMap);
+        if (width < 0)
+            return matchFields;
+        matchFields.push_back(MatchField{*matchFieldName, *matchType,
+                              matchTypeName, uint32_t(width),
+                              keyElement->to<IR::IAnnotated>(), type_name});
     }
 
     return matchFields;
@@ -662,13 +710,40 @@ getMatchFields(const IR::P4Table* table, ReferenceMap* refMap, TypeMap* typeMap)
 class ParseAnnotations : public P4::ParseAnnotations {
  public:
     ParseAnnotations() : P4::ParseAnnotations("P4Runtime", false, {
-                PARSE("controller_header", StringLiteral),
-                PARSE_EMPTY("hidden"),
-                PARSE("id", Constant),
-                PARSE("brief", StringLiteral),
-                PARSE("description", StringLiteral)
-            }) { }
+        PARSE("controller_header", StringLiteral),
+        PARSE_EMPTY("hidden"),
+        PARSE("id", Constant),
+        PARSE("brief", StringLiteral),
+        PARSE("description", StringLiteral),
+        // This annotation is architecture-specific in theory, but given that it
+        // is "reserved" by the P4Runtime specification, I don't really have any
+        // qualms about adding it here. I don't think it is possible to just run
+        // a different ParseAnnotations pass in the constructor of the
+        // architecture-specific P4RuntimeArchHandlerIface implementation, since
+        // ParseAnnotations modifies the program. I don't really like the
+        // possible alternatives either: 1) modify the P4RuntimeArchHandlerIface
+        // interface so that each implementation can provide a custom
+        // ParseAnnotations instance, or 2) run a ParseAnnotations pass
+        // "locally" (in this case on action profile instances since this
+        // annotation is for them).
+        PARSE("max_group_size", Constant),
+        // @p4runtime_translation has two args
+        PARSE_PAIR("p4runtime_translation",
+                   Expression),
+    }) { }
 };
+
+namespace {
+
+// It must be an iterator type pointing to a p4info.proto message with a
+// 'preamble' field of type p4configv1::Preamble. Fn is an arbitrary function
+// with a single parameter of type p4configv1::Preamble.
+template <typename It, typename Fn> void
+forEachPreamble(It first, It last, Fn fn) {
+    for (It it = first; it != last; it++) fn(it->preamble());
+}
+
+} // namespace
 
 /// An analyzer which translates the information available in the P4 IR into a
 /// representation of the control plane API which is consumed by P4Runtime.
@@ -693,6 +768,68 @@ class P4RuntimeAnalyzer {
     const P4Info* getP4Info() const {
         BUG_CHECK(p4Info != nullptr, "Didn't produce a P4Info object?");
         return p4Info;
+    }
+
+    /// Check for duplicate names among objects of the same type in the
+    /// generated P4Info message and @return the number of duplicates.
+    template <typename T>
+    size_t checkForDuplicatesOfSameType(const T& objs, cstring typeName,
+                                        std::unordered_set<p4rt_id_t>* ids) const {
+        size_t dupCnt = 0;
+        std::unordered_set<std::string> names;
+
+        auto checkOne = [&dupCnt, &names, &ids, typeName](const p4configv1::Preamble& pre) {
+            auto pName = names.insert(pre.name());
+            auto pId = ids->insert(pre.id());
+            if (!pName.second) {
+                ::error(ErrorType::ERR_DUPLICATE,
+                        "Name '%1%' is used for multiple %2% objects in the P4Info message",
+                        pre.name(), typeName);
+                dupCnt++;
+                return;
+            }
+            BUG_CHECK(pId.second,
+                      "Id '%1%' is used for multiple objects in the P4Info message",
+                      pre.id());
+        };
+
+        forEachPreamble(objs.cbegin(), objs.cend(), checkOne);
+
+        return dupCnt;
+    }
+
+    /// Check for objects with duplicate names in the generated P4Info message
+    /// and @return the number of duplicates.
+    size_t checkForDuplicates() const {
+        size_t dupCnt = 0;
+        // There is no real need to check for duplicate ids since the
+        // SymbolTable ensures that there are not duplicates. But it certainly
+        // does not hurt to it. Architecture-specific implementations may be
+        // misusing the SymbolTable, or bypassing it and allocating incorrect
+        // ids.
+        std::unordered_set<p4rt_id_t> ids;
+
+        // I considered using Protobuf reflection, but it didn't really make the
+        // code less verbose, and it certainly didn't make it easier to read.
+        dupCnt += checkForDuplicatesOfSameType(p4Info->tables(), "table", &ids);
+        dupCnt += checkForDuplicatesOfSameType(p4Info->actions(), "action", &ids);
+        dupCnt += checkForDuplicatesOfSameType(p4Info->action_profiles(), "action profile", &ids);
+        dupCnt += checkForDuplicatesOfSameType(p4Info->counters(), "counter", &ids);
+        dupCnt += checkForDuplicatesOfSameType(p4Info->direct_counters(), "direct counter", &ids);
+        dupCnt += checkForDuplicatesOfSameType(p4Info->meters(), "meter", &ids);
+        dupCnt += checkForDuplicatesOfSameType(p4Info->direct_meters(), "direct meter", &ids);
+        dupCnt += checkForDuplicatesOfSameType(
+            p4Info->controller_packet_metadata(), "controller packet metadata", &ids);
+        dupCnt += checkForDuplicatesOfSameType(p4Info->value_sets(), "value set", &ids);
+        dupCnt += checkForDuplicatesOfSameType(p4Info->registers(), "register", &ids);
+        dupCnt += checkForDuplicatesOfSameType(p4Info->digests(), "digest", &ids);
+
+        for (const auto& externType : p4Info->externs()) {
+            dupCnt += checkForDuplicatesOfSameType(
+                externType.instances(), externType.extern_type_name(), &ids);
+        }
+
+        return dupCnt;
     }
 
  public:
@@ -754,21 +891,29 @@ class P4RuntimeAnalyzer {
             addDocumentation(param, actionParam->to<IR::IAnnotated>());
 
             auto paramType = typeMap->getType(actionParam, true);
-            if (!paramType->is<IR::Type_Bits>() && !paramType->is<IR::Type_Boolean>()) {
-                ::error("Action parameter %1% has a type which is not bit<> or int<> or bool",
-                        actionParam);
+            if (!paramType->is<IR::Type_Bits>() && !paramType->is<IR::Type_Boolean>()
+                && !paramType->is<IR::Type_Newtype>() &&
+                !paramType->is<IR::Type_SerEnum>()) {
+                ::error("Action parameter %1% has a type which is not "
+                        "bit<>, int<>, bool, type or serializable enum", actionParam);
                 continue;
             }
-            if (paramType->is<IR::Type_Boolean>()) {
-                param->set_bitwidth(1);
-            } else {
-                param->set_bitwidth(paramType->width_bits());
+            int w = getTypeWidth(paramType, typeMap);
+            if (w < 0)
+                return;
+            param->set_bitwidth(w);
+            cstring type_name = getTypeName(paramType, typeMap);
+            if (type_name) {
+                auto namedType = param->mutable_type_name();
+                namedType->set_name(type_name);
             }
         }
     }
 
     void addControllerHeader(const IR::Type_Header* type) {
         if (isHidden(type)) return;
+
+        auto flattenedHeaderType = FlattenHeader::flatten(typeMap, type);
 
         auto name = type->controlPlaneName();
         auto id = symbols.getId(P4RuntimeSymbolType::CONTROLLER_HEADER(), name);
@@ -789,7 +934,7 @@ class P4RuntimeAnalyzer {
                     controllerName /* name */, controllerName /* alias */, annotations);
 
         size_t index = 1;
-        for (auto headerField : type->fields) {
+        for (auto headerField : flattenedHeaderType->fields) {
             if (isHidden(headerField)) continue;
             auto metadata = header->add_metadata();
             auto fieldName = headerField->controlPlaneName();
@@ -798,10 +943,16 @@ class P4RuntimeAnalyzer {
             addAnnotations(metadata, headerField->to<IR::IAnnotated>());
 
             auto fieldType = typeMap->getType(headerField, true);
-            BUG_CHECK(fieldType->is<IR::Type_Bits>(),
-                      "Header field %1% has a type which is not bit<> or int<>",
+            BUG_CHECK((fieldType->is<IR::Type_Bits>() ||
+                      fieldType->is<IR::Type_Newtype>() ||
+                      fieldType->is<IR::Type_SerEnum>()),
+                      "Header field %1% has a type which is not bit<>, "
+                      "int<>, type, or serializable enum",
                       headerField);
-            metadata->set_bitwidth(fieldType->width_bits());
+            auto w = getTypeWidth(fieldType, typeMap);
+            if (w < 0)
+                return;
+            metadata->set_bitwidth(w);
         }
     }
 
@@ -818,7 +969,7 @@ class P4RuntimeAnalyzer {
 
         bool isConstTable = getConstTable(tableDeclaration);
 
-        auto name = tableDeclaration->controlPlaneName();
+        auto name = archHandler->getControlPlaneName(tableBlock);
         auto annotations = tableDeclaration->to<IR::IAnnotated>();
 
         auto table = p4Info->add_tables();
@@ -859,7 +1010,14 @@ class P4RuntimeAnalyzer {
             addAnnotations(match_field, field.annotations);
             addDocumentation(match_field, field.annotations);
             match_field->set_bitwidth(field.bitwidth);
-            match_field->set_match_type(field.type);
+            if (field.type != MatchField::MatchTypes::UNSPECIFIED)
+                match_field->set_match_type(field.type);
+            else
+                match_field->set_other_match_type(field.other_match_type);
+            if (field.type_name) {
+                auto namedType = match_field->mutable_type_name();
+                namedType->set_name(field.type_name);
+            }
         }
 
         if (isConstTable) {
@@ -911,8 +1069,8 @@ class P4RuntimeAnalyzer {
         // guaranteed by caller
         CHECK_NULL(inst);
 
-        auto et = typeMap->getTypeType(inst->elementType, true);
-        auto bitwidth = static_cast<uint32_t>(et->width_bits());
+        auto vs = p4Info->add_value_sets();
+
         auto name = inst->controlPlaneName();
 
         unsigned int size = 0;
@@ -927,12 +1085,79 @@ class P4RuntimeAnalyzer {
         }
         size = sizeConstant->value.get_ui();
 
-        auto vs = p4Info->add_value_sets();
         auto id = symbols.getId(P4RuntimeSymbolType::VALUE_SET(), name);
         setPreamble(vs->mutable_preamble(), id, name, symbols.getAlias(name),
                     inst->to<IR::IAnnotated>());
-        vs->set_bitwidth(bitwidth);
         vs->set_size(size);
+
+        /// Look for a @match annotation on the struct field and set the match
+        /// type of the match field appropriately.
+        auto setMatchType = [this](const IR::StructField* sf, p4configv1::MatchField* match) {
+            auto matchAnnotation = sf->getAnnotation(IR::Annotation::matchAnnotation);
+            // default is EXACT
+            if (!matchAnnotation) {
+                match->set_match_type(MatchField::MatchTypes::EXACT);  // default match type
+                return;
+            }
+            auto matchPathExpr = matchAnnotation->expr[0]->to<IR::PathExpression>();
+            CHECK_NULL(matchPathExpr);
+            auto matchTypeName = getMatchTypeName(matchPathExpr, refMap);
+            auto matchType = getMatchType(matchTypeName);
+            if (matchType == boost::none) {
+                ::error(ErrorType::ERR_UNSUPPORTED,
+                        "match type for Value Set '@match' annotation",
+                        matchAnnotation);
+                return;
+            }
+            if (matchType != MatchField::MatchTypes::UNSPECIFIED)
+                match->set_match_type(*matchType);
+            else
+                match->set_other_match_type(matchTypeName);
+        };
+
+        // TODO(antonin): handle new types
+
+        // as per the P4Runtime v1.0.0 specification
+        auto et = typeMap->getTypeType(inst->elementType, true);
+        if (et->is<IR::Type_Bits>()) {
+            auto* match = vs->add_match();
+            match->set_id(1);
+            match->set_bitwidth(et->width_bits());
+            match->set_match_type(MatchField::MatchTypes::EXACT);
+        } else if (et->is<IR::Type_Struct>()) {
+            int fieldId = 1;
+            for (auto f : et->to<IR::Type_Struct>()->fields) {
+                auto fType = f->type;
+                if (!fType->is<IR::Type_Bits>()) {
+                    ::error(ErrorType::ERR_UNSUPPORTED,
+                            "type parameter for Value Set; "
+                            "this version of P4Runtime requires that when the type parameter "
+                            "of a Value Set is a struct, all the fields of the struct "
+                            "must be of type bit<W>, but %1% is not", f);
+                    continue;
+                }
+                auto* match = vs->add_match();
+                match->set_id(fieldId++);
+                match->set_name(f->controlPlaneName());
+                match->set_bitwidth(fType->width_bits());
+                setMatchType(f, match);
+                // add annotations save for the @match one
+                addAnnotations(
+                    match, f,
+                    [](cstring name) { return name == IR::Annotation::matchAnnotation; });
+                addDocumentation(match, f);
+            }
+        } else if (et->is<IR::Type_Tuple>()) {
+            ::error(ErrorType::ERR_UNSUPPORTED,
+                    "type parameter for Value Set; "
+                    "this version of P4Runtime requires the type parameter of a Value Set "
+                    "to be a bit<W> or a struct of bit<W> fields",
+                    inst);
+        } else {
+            ::error(ErrorType::ERR_INVALID,
+                    "type parameter for Value Set; it must be one of bit<W>, struct or tuple",
+                    inst);
+        }
     }
 
     /// To be called after all objects have been added to P4Info. Calls the
@@ -963,7 +1188,7 @@ class P4RuntimeAnalyzer {
             if (annotation->name != IR::Annotation::pkginfoAnnotation) continue;
             for (auto* kv : annotation->kv) {
                 auto name = kv->name.name;
-                auto setStringField = [kv, name, pkginfo, &keysVisited](cstring fName) {
+                auto setStringField = [kv, pkginfo, &keysVisited](cstring fName) {
                     auto* v = kv->expression->to<IR::StringLiteral>();
                     if (v == nullptr) {
                         ::error("Value for '%1%' key in @pkginfo annotation is not a string", kv);
@@ -985,13 +1210,15 @@ class P4RuntimeAnalyzer {
                     name == "contact" || name == "url") {
                     setStringField(name);
                 } else if (name == "arch") {
-                    ::warning("The '%1%' field in PkgInfo should be set by the compiler, "
+                    ::warning(ErrorType::WARN_INVALID,
+                              "The '%1%' field in PkgInfo should be set by the compiler, "
                               "not by the user", kv);
                     // override the value set previously with the user-provided
                     // value.
                     setStringField(name);
                 } else {
-                    ::warning("Unknown key name '%1%' in @pkginfo annotation", name);
+                    ::warning(ErrorType::WARN_UNKNOWN,
+                              "Unknown key name '%1%' in @pkginfo annotation", name);
                 }
             }
         }
@@ -1062,8 +1289,9 @@ static void collectTableSymbols(P4RuntimeSymbolTable& symbols,
                                 P4RuntimeArchHandlerIface* archHandler,
                                 const IR::TableBlock* tableBlock) {
     CHECK_NULL(tableBlock);
-    auto table = tableBlock->container;
-    symbols.add(P4RuntimeSymbolType::TABLE(), table);
+    auto name = archHandler->getControlPlaneName(tableBlock);
+    auto id = externalId(tableBlock->container);
+    symbols.add(P4RuntimeSymbolType::TABLE(), name, id);
     archHandler->collectTableProperties(&symbols, tableBlock);
 }
 
@@ -1112,17 +1340,18 @@ class P4RuntimeEntriesConverter {
     }
 
     /// Appends the 'const entries' for the table to the WriteRequest message.
-    void addTableEntries(const IR::TableBlock* tableBlock, ReferenceMap* refMap) {
+    void addTableEntries(const IR::TableBlock* tableBlock, ReferenceMap* refMap,
+                         TypeMap* typeMap, P4RuntimeArchHandlerIface* archHandler) {
         CHECK_NULL(tableBlock);
         auto table = tableBlock->container;
 
         auto entriesList = table->getEntries();
         if (entriesList == nullptr) return;
 
-        auto tableName = table->controlPlaneName();
+        auto tableName = archHandler->getControlPlaneName(tableBlock);
         auto tableId = symbols.getId(P4RuntimeSymbolType::TABLE(), tableName);
 
-        int entryPriority = 1;
+        int entryPriority = entriesList->entries.size();
         auto needsPriority = tableNeedsPriority(table, refMap);
         for (auto e : entriesList->entries) {
             auto protoUpdate = entries->add_updates();
@@ -1130,15 +1359,23 @@ class P4RuntimeEntriesConverter {
             auto protoEntity = protoUpdate->mutable_entity();
             auto protoEntry = protoEntity->mutable_table_entry();
             protoEntry->set_table_id(tableId);
-            addMatchKey(protoEntry, table, e->getKeys(), refMap);
-            addAction(protoEntry, e->getAction(), refMap);
-            // TODO(antonin): according to the P4 specification, "Entries in a
-            // table are matched in the program order, stopping at the first
-            // matching entry." Based on the definition of 'priority' in
-            // P4Runtime, we may need a different scheme to allocate priority
-            // values. For now this assumes that the entry with priority '1' has
-            // the highest priority.
-            if (needsPriority) protoEntry->set_priority(entryPriority++);
+            addMatchKey(protoEntry, table, e->getKeys(), refMap, typeMap);
+            addAction(protoEntry, e->getAction(), refMap, typeMap);
+            // According to the P4 specification, "Entries in a table are
+            // matched in the program order, stopping at the first matching
+            // entry." In P4Runtime, the lowest valid priority value is 1 and
+            // entries with a higher numerical priority value have higher
+            // priority. So we assign the first entry a priority of #entries and
+            // we decrement the priority by 1 for each entry. The last entry in
+            // the table will have priority 1.
+            if (needsPriority) protoEntry->set_priority(entryPriority--);
+
+            auto priorityAnnotation = e->getAnnotation("priority");
+            if (priorityAnnotation != nullptr) {
+                ::warning(ErrorType::WARN_DEPRECATED,
+                          "The @priority annotation on %1% is not part of the P4 specification, "
+                          "nor of the P4Runtime specification, and will be ignored", e);
+            }
         }
     }
 
@@ -1158,7 +1395,8 @@ class P4RuntimeEntriesConverter {
 
     void addAction(p4v1::TableEntry* protoEntry,
                    const IR::Expression* actionRef,
-                   ReferenceMap* refMap) const {
+                   ReferenceMap* refMap,
+                   TypeMap* typeMap) const {
         if (!actionRef->is<IR::MethodCallExpression>()) {
             ::error("%1%: invalid action in entries list", actionRef);
             return;
@@ -1177,8 +1415,10 @@ class P4RuntimeEntriesConverter {
         for (auto arg : *actionCall->arguments) {
             auto protoParam = protoAction->add_params();
             protoParam->set_param_id(parameterId++);
-            auto parameter = actionDecl->parameters->parameters.at(parameterIndex);
-            auto width = parameter->type->width_bits();
+            auto parameter = actionDecl->parameters->parameters.at(parameterIndex++);
+            int width = getTypeWidth(parameter->type, typeMap);
+            if (width < 0)
+                return;
             if (arg->expression->is<IR::Constant>()) {
                 auto value = stringRepr(arg->expression->to<IR::Constant>(), width);
                 protoParam->set_value(*value);
@@ -1195,7 +1435,8 @@ class P4RuntimeEntriesConverter {
     void addMatchKey(p4v1::TableEntry* protoEntry,
                      const IR::P4Table* table,
                      const IR::ListExpression* keyset,
-                     ReferenceMap* refMap) const {
+                     ReferenceMap* refMap,
+                     TypeMap* typeMap) const {
         int keyIndex = 0;
         int fieldId = 1;
         for (auto k : keyset->components) {
@@ -1203,16 +1444,14 @@ class P4RuntimeEntriesConverter {
             auto keyWidth = tableKey->expression->type->width_bits();
             auto matchType = getKeyMatchType(tableKey, refMap);
 
-            auto protoMatch = protoEntry->add_match();
-            protoMatch->set_field_id(fieldId++);
             if (matchType == P4CoreLibrary::instance.exactMatch.name) {
-                addExact(protoMatch, k, keyWidth);
+              addExact(protoEntry, fieldId++, k, keyWidth, typeMap);
             } else if (matchType == P4CoreLibrary::instance.lpmMatch.name) {
-                addLpm(protoMatch, k, keyWidth);
+              addLpm(protoEntry, fieldId++, k, keyWidth, typeMap);
             } else if (matchType == P4CoreLibrary::instance.ternaryMatch.name) {
-                addTernary(protoMatch, k, keyWidth);
+              addTernary(protoEntry, fieldId++, k, keyWidth, typeMap);
             } else if (matchType == P4V1::V1Model::instance.rangeMatchType.name) {
-                addRange(protoMatch, k, keyWidth);
+              addRange(protoEntry, fieldId++, k, keyWidth, typeMap);
             } else {
                 if (!k->is<IR::DefaultExpression>())
                     ::error("%1%: match type not supported by P4Runtime serializer", matchType);
@@ -1225,89 +1464,161 @@ class P4RuntimeEntriesConverter {
     /// expression is simple (integer literal or boolean literal) or returns
     /// boost::none otherwise.
     boost::optional<std::string> convertSimpleKeyExpression(
-        const IR::Expression* k, int keyWidth) const {
+        const IR::Expression* k, int keyWidth, TypeMap* typeMap) const {
         if (k->is<IR::Constant>()) {
             return stringRepr(k->to<IR::Constant>(), keyWidth);
         } else if (k->is<IR::BoolLiteral>()) {
             return stringRepr(k->to<IR::BoolLiteral>(), keyWidth);
+        } else if (k->is<IR::Member>()) {
+             // A SerEnum is a member const entries are processed here.
+             auto mem = k->to<IR::Member>();
+             auto se = mem->type->to<IR::Type_SerEnum>();
+             auto ei = EnumInstance::resolve(mem, typeMap);
+             if (!ei) return boost::none;
+             if (auto sei = ei->to<SerEnumInstance>()) {
+                 auto type = sei->value->to<IR::Constant>();
+                 auto w = se->type->width_bits();
+                 return stringRepr(type, w);
+             }
+             ::error("%1% invalid Member key expression", k);
+             return boost::none;
         } else {
             ::error("%1% invalid key expression", k);
             return boost::none;
         }
     }
 
-    void addExact(p4v1::FieldMatch* protoMatch, const IR::Expression* k, int keyWidth) const {
+    /// Convert a key expression to the mpz_class integer value if the
+    /// expression is simple (integer literal or boolean literal) or returns
+    /// boost::none otherwise.
+    boost::optional<mpz_class> simpleKeyExpressionValue(const IR::Expression* k) const {
+        if (k->is<IR::Constant>()) {
+            return k->to<IR::Constant>()->value;
+        } else if (k->is<IR::BoolLiteral>()) {
+            return static_cast<mpz_class>(k->to<IR::BoolLiteral>()->value ? 1 : 0);
+        } else {
+            ::error("%1% invalid key expression", k);
+            return boost::none;
+        }
+    }
+
+    void addExact(p4v1::TableEntry* protoEntry, int fieldId,
+                  const IR::Expression* k,
+                  int keyWidth, TypeMap* typeMap) const {
+        auto protoMatch = protoEntry->add_match();
+        protoMatch->set_field_id(fieldId);
         auto protoExact = protoMatch->mutable_exact();
-        auto value = convertSimpleKeyExpression(k, keyWidth);
+        auto value = convertSimpleKeyExpression(k, keyWidth, typeMap);
         if (value == boost::none) return;
         protoExact->set_value(*value);
     }
 
-    void addLpm(p4v1::FieldMatch* protoMatch, const IR::Expression* k, int keyWidth) const {
-        auto protoLpm = protoMatch->mutable_lpm();
+    void addLpm(p4v1::TableEntry* protoEntry, int fieldId,
+                const IR::Expression* k,
+                int keyWidth, TypeMap *typeMap) const {
+        if (k->is<IR::DefaultExpression>())  // don't care, skip in P4Runtime message
+            return;
+        int prefixLen;
+        boost::optional<std::string> valueStr;
         if (k->is<IR::Mask>()) {
             auto km = k->to<IR::Mask>();
-            auto value = convertSimpleKeyExpression(km->left, keyWidth);
+            auto value = simpleKeyExpressionValue(km->left);
             if (value == boost::none) return;
-            protoLpm->set_value(*value);
-            auto trailing_zeros = [](unsigned long n) { return n ? __builtin_ctzl(n) : 0; };
-            auto count_ones = [](unsigned long n) { return n ? __builtin_popcountl(n) : 0;};
-            unsigned long mask = km->right->to<IR::Constant>()->value.get_ui();
+            auto trailing_zeros = [keyWidth](const mpz_class& n) -> int {
+                return (n == 0) ? keyWidth : mpz_scan1(n.get_mpz_t(), 0); };
+            auto count_ones = [](const mpz_class& n) -> int {
+                return mpz_popcount(n.get_mpz_t()); };
+            auto mask = km->right->to<IR::Constant>()->value;
             auto len = trailing_zeros(mask);
             if (len + count_ones(mask) != keyWidth) {  // any remaining 0s in the prefix?
                 ::error("%1% invalid mask for LPM key", k);
                 return;
             }
-            protoLpm->set_prefix_len(keyWidth - len);
-        } else if (k->is<IR::DefaultExpression>()) {
-            protoLpm->set_value(*stringReprConstant(0, keyWidth));
-            protoLpm->set_prefix_len(0);
+            if ((*value & mask) != *value) {
+                ::warning(ErrorType::WARN_MISMATCH,
+                          "P4Runtime requires that LPM matches have masked-off bits set to 0, "
+                          "updating value %1% to conform to the P4Runtime specification", km->left);
+                *value &= mask;
+            }
+            if (mask == 0)  // don't care
+                return;
+            prefixLen = keyWidth - len;
+            valueStr = stringReprConstant(*value, keyWidth);
         } else {
-            auto value = convertSimpleKeyExpression(k, keyWidth);
-            if (value == boost::none) return;
-            protoLpm->set_value(*value);
-            protoLpm->set_prefix_len(keyWidth);
+            prefixLen = keyWidth;
+            valueStr = convertSimpleKeyExpression(k, keyWidth, typeMap);
         }
+        if (valueStr == boost::none) return;
+        auto protoMatch = protoEntry->add_match();
+        protoMatch->set_field_id(fieldId);
+        auto protoLpm = protoMatch->mutable_lpm();
+        protoLpm->set_value(*valueStr);
+        protoLpm->set_prefix_len(prefixLen);
     }
 
-    void addTernary(p4v1::FieldMatch* protoMatch, const IR::Expression* k, int keyWidth) const {
-        auto protoTernary = protoMatch->mutable_ternary();
+    void addTernary(p4v1::TableEntry* protoEntry, int fieldId,
+                    const IR::Expression* k, int keyWidth,
+                    TypeMap* typeMap) const {
+        if (k->is<IR::DefaultExpression>())  // don't care, skip in P4Runtime message
+            return;
+        boost::optional<std::string> valueStr;
+        boost::optional<std::string> maskStr;
         if (k->is<IR::Mask>()) {
             auto km = k->to<IR::Mask>();
-            auto value = convertSimpleKeyExpression(km->left, keyWidth);
-            auto mask = convertSimpleKeyExpression(km->right, keyWidth);
+            auto value = simpleKeyExpressionValue(km->left);
+            auto mask = simpleKeyExpressionValue(km->right);
             if (value == boost::none || mask == boost::none) return;
-            protoTernary->set_value(*value);
-            protoTernary->set_mask(*mask);
-        } else if (k->is<IR::DefaultExpression>()) {
-            protoTernary->set_value(*stringReprConstant(0, keyWidth));
-            protoTernary->set_mask(*stringReprConstant(0, keyWidth));
+            if ((*value & *mask) != *value) {
+                ::warning(ErrorType::WARN_MISMATCH,
+                          "P4Runtime requires that Ternary matches have masked-off bits set to 0, "
+                          "updating value %1% to conform to the P4Runtime specification", km->left);
+                *value &= *mask;
+            }
+            if (*mask == 0)  // don't care
+                return;
+            valueStr = stringReprConstant(*value, keyWidth);
+            maskStr = stringReprConstant(*mask, keyWidth);
         } else {
-            auto value = convertSimpleKeyExpression(k, keyWidth);
-            if (value == boost::none) return;
-            protoTernary->set_value(*value);
-            protoTernary->set_mask(*stringReprConstant(Util::mask(keyWidth), keyWidth));
+            valueStr = convertSimpleKeyExpression(k, keyWidth, typeMap);
+            maskStr = stringReprConstant(Util::mask(keyWidth), keyWidth);
         }
+        if (valueStr == boost::none || maskStr == boost::none) return;
+        auto protoMatch = protoEntry->add_match();
+        protoMatch->set_field_id(fieldId);
+        auto protoTernary = protoMatch->mutable_ternary();
+        protoTernary->set_value(*valueStr);
+        protoTernary->set_mask(*maskStr);
     }
 
-    void addRange(p4v1::FieldMatch* protoMatch, const IR::Expression* k, int keyWidth) const {
-        auto protoRange = protoMatch->mutable_range();
+    void addRange(p4v1::TableEntry* protoEntry, int fieldId,
+                  const IR::Expression* k, int keyWidth, TypeMap* typeMap) const {
+        if (k->is<IR::DefaultExpression>())  // don't care, skip in P4Runtime message
+            return;
+        boost::optional<std::string> startStr;
+        boost::optional<std::string> endStr;
         if (k->is<IR::Range>()) {
             auto kr = k->to<IR::Range>();
-            auto start = convertSimpleKeyExpression(kr->left, keyWidth);
-            auto end = convertSimpleKeyExpression(kr->right, keyWidth);
+            auto start = simpleKeyExpressionValue(kr->left);
+            auto end = simpleKeyExpressionValue(kr->right);
             if (start == boost::none || end == boost::none) return;
-            protoRange->set_low(*start);
-            protoRange->set_high(*end);
-        } else if (k->is<IR::DefaultExpression>()) {
-            protoRange->set_low(*stringReprConstant(0, keyWidth));
-            protoRange->set_high(*stringReprConstant((1 << keyWidth)-1, keyWidth));
+            mpz_class maxValue = (mpz_class(1) << keyWidth) - 1;
+            // These should be guaranteed by the frontend
+            BUG_CHECK(*start <= *end, "Invalid range with start greater than end");
+            BUG_CHECK(*end <= maxValue, "End of range is too large");
+            if (*start == 0 && *end == maxValue)  // don't care
+                return;
+            startStr = stringReprConstant(*start, keyWidth);
+            endStr = stringReprConstant(*end, keyWidth);
         } else {
-            auto value = convertSimpleKeyExpression(k, keyWidth);
-            if (value == boost::none) return;
-            protoRange->set_low(*value);
-            protoRange->set_high(*value);
+            startStr = convertSimpleKeyExpression(k, keyWidth, typeMap);
+            endStr = startStr;
         }
+        if (startStr == boost::none || endStr == boost::none) return;
+        auto protoMatch = protoEntry->add_match();
+        protoMatch->set_field_id(fieldId);
+        auto protoRange = protoMatch->mutable_range();
+        protoRange->set_low(*startStr);
+        protoRange->set_high(*endStr);
     }
 
     cstring getKeyMatchType(const IR::KeyElement* ke, ReferenceMap* refMap) const {
@@ -1326,6 +1637,15 @@ class P4RuntimeEntriesConverter {
         auto bitsRequired = static_cast<size_t>(mpz_sizeinbase(value.get_mpz_t(), 2));
         BUG_CHECK(static_cast<size_t>(width) >= bitsRequired,
                   "Cannot represent %1% on %2% bits", value, width);
+        // TODO(antonin): P4Runtime defines the canonical representation for
+        // bit<W> value as the smallest binary string required to represent the
+        // value (no 0 padding). Unfortunately the reference P4Runtime
+        // implementation (https://github.com/p4lang/PI) does not currently
+        // support the canonical representation, so instead we use a padded
+        // binary string, which according to the P4Runtime specification is also
+        // valid (but not the canonical representation, which means no RW
+        // symmetry).
+        // auto bytes = ROUNDUP(mpz_sizeinbase(value.get_mpz_t(), 2), 8);
         auto bytes = ROUNDUP(width, 8);
         std::vector<char> data(bytes);
         mpz_export(data.data(), NULL, 1 /* big endian word */, bytes,
@@ -1404,12 +1724,23 @@ P4RuntimeAnalyzer::analyze(const IR::P4Program* program,
 
     analyzer.postAdd();
 
+    // Unfortunately we cannot just rely on the SymbolTable to detect
+    // duplicates as it would break existing code. For example, top-level
+    // actions are inlined in every control which uses them and the actions end
+    // up being "added" to the SymbolTable mutiple times (which is harmless for
+    // P4Info generation).
+    auto dupCnt = analyzer.checkForDuplicates();
+    if (dupCnt > 0) {
+        ::error(ErrorType::ERR_DUPLICATE, "Found %1% duplicate name(s) in the P4Info", dupCnt);
+    }
+
     analyzer.addPkgInfo(evaluatedProgram, arch);
 
     P4RuntimeEntriesConverter entriesConverter(symbols);
     Helpers::forAllEvaluatedBlocks(evaluatedProgram, [&](const IR::Block* block) {
         if (block->is<IR::TableBlock>())
-            entriesConverter.addTableEntries(block->to<IR::TableBlock>(), refMap);
+            entriesConverter.addTableEntries(block->to<IR::TableBlock>(), refMap,
+                                             typeMap, archHandler);
     });
 
     auto* p4Info = analyzer.getP4Info();
@@ -1440,7 +1771,6 @@ P4RuntimeSerializer::generateP4Runtime(const IR::P4Program* program, cstring arc
         // We can only handle a very restricted class of action parameters - the
         // types need to be bit<> or int<> - so we fail without this pass.
         new P4::RemoveActionParameters(&refMap, &typeMap),
-        new P4::FlattenHeaders(&refMap, &typeMap),		
         // Update types and reevaluate the program.
         new P4::TypeChecking(&refMap, &typeMap, /* updateExpressions = */ true),
         evaluator
@@ -1448,9 +1778,12 @@ P4RuntimeSerializer::generateP4Runtime(const IR::P4Program* program, cstring arc
     auto* p4RuntimeProgram = program->apply(p4RuntimeFixups);
     auto* evaluatedProgram = evaluator->getToplevelBlock();
 
-    BUG_CHECK(p4RuntimeProgram && evaluatedProgram,
-              "Failed to transform the program into a "
-              "P4Runtime-compatible form");
+    if (!p4RuntimeProgram || !evaluatedProgram) {
+        ::error(ErrorType::ERR_UNSUPPORTED,
+                "P4 program (cannot apply necessary program transformations)",
+                "Cannot generate P4Info message");
+        return P4RuntimeAPI{new p4configv1::P4Info(), new p4v1::WriteRequest()};
+    }
 
     auto archHandler = (*archHandlerBuilderIt->second)(&refMap, &typeMap, evaluatedProgram);
 
@@ -1458,7 +1791,7 @@ P4RuntimeSerializer::generateP4Runtime(const IR::P4Program* program, cstring arc
                                       &refMap, &typeMap, archHandler, arch);
 }
 
-void P4RuntimeAPI::serializeP4InfoTo(std::ostream* destination, P4RuntimeFormat format) {
+void P4RuntimeAPI::serializeP4InfoTo(std::ostream* destination, P4RuntimeFormat format) const {
     using namespace ControlPlaneAPI;
 
     bool success = true;
@@ -1478,7 +1811,7 @@ void P4RuntimeAPI::serializeP4InfoTo(std::ostream* destination, P4RuntimeFormat 
         ::error("Failed to serialize the P4Runtime API to the output");
 }
 
-void P4RuntimeAPI::serializeEntriesTo(std::ostream* destination, P4RuntimeFormat format) {
+void P4RuntimeAPI::serializeEntriesTo(std::ostream* destination, P4RuntimeFormat format) const {
     using namespace ControlPlaneAPI;
 
     bool success = true;
@@ -1498,35 +1831,108 @@ void P4RuntimeAPI::serializeEntriesTo(std::ostream* destination, P4RuntimeFormat
         ::error("Failed to serialize the P4Runtime static table entries to the output");
 }
 
+static bool parseFileNames(cstring fileNameVector,
+                           std::vector<cstring> &files,
+                           std::vector<P4::P4RuntimeFormat> &formats) {
+    for (auto current = fileNameVector; current; ) {
+        cstring name = current;
+        const char* comma = current.find(',');
+        if (comma != nullptr) {
+            name = current.before(comma);
+            current = comma + 1;
+        } else {
+            current = cstring();
+        }
+        files.push_back(name);
+
+        if (cstring suffix = name.findlast('.')) {
+            if (suffix == ".json") {
+                formats.push_back(P4::P4RuntimeFormat::JSON);
+            } else if (suffix == ".bin") {
+                formats.push_back(P4::P4RuntimeFormat::BINARY);
+            } else if (suffix == ".txt") {
+                formats.push_back(P4::P4RuntimeFormat::TEXT);
+            } else {
+                ::error("%1%: Could not detect p4runtime info file format from file suffix %2%",
+                        name, suffix);
+                return false;
+            }
+        } else {
+            ::error("%1%: unknown file kind; known suffixes are .bin, .txt, .json", name);
+            return false;
+        }
+    }
+    return true;
+}
+
 void
 P4RuntimeSerializer::serializeP4RuntimeIfRequired(const IR::P4Program* program,
                                                   const CompilerOptions& options) {
-    // The options parser in the frontend already prints a warning if
-    // '--p4runtime-entries-file' is used without '--p4runtime-file'.
-    if (options.p4RuntimeFile.isNullOrEmpty()) return;
+    std::vector<cstring> files;
+    std::vector<P4::P4RuntimeFormat> formats;
 
-    auto arch = P4RuntimeSerializer::resolveArch(options);
-
-    if (Log::verbose())
-        std::cout << "Generating P4Runtime output for architecture " << arch << std::endl;
-
-    auto p4Runtime = get()->generateP4Runtime(program, arch);
-
-    std::ostream* out = openFile(options.p4RuntimeFile, false);
-    if (!out) {
-        ::error("Couldn't open P4Runtime API file: %1%", options.p4RuntimeFile);
+    // only generate P4Info is required by use-provided options
+    if (options.p4RuntimeFile.isNullOrEmpty() &&
+        options.p4RuntimeFiles.isNullOrEmpty() &&
+        options.p4RuntimeEntriesFile.isNullOrEmpty() &&
+        options.p4RuntimeEntriesFiles.isNullOrEmpty()) {
         return;
     }
-    p4Runtime.serializeP4InfoTo(out, options.p4RuntimeFormat);
+    auto arch = P4RuntimeSerializer::resolveArch(options);
+    if (Log::verbose())
+        std::cout << "Generating P4Runtime output for architecture " << arch << std::endl;
+    auto p4Runtime = get()->generateP4Runtime(program, arch);
+    serializeP4RuntimeIfRequired(p4Runtime, options);
+}
 
-    if (!options.p4RuntimeEntriesFile.isNullOrEmpty()) {
-        std::ostream* out = openFile(options.p4RuntimeEntriesFile, false);
-        if (!out) {
-            ::error("Couldn't open P4Runtime static entries file: %1%",
-                    options.p4RuntimeEntriesFile);
-            return;
+void
+P4RuntimeSerializer::serializeP4RuntimeIfRequired(const P4RuntimeAPI& p4Runtime,
+                                                  const CompilerOptions& options) {
+    std::vector<cstring> files;
+    std::vector<P4::P4RuntimeFormat> formats;
+
+    if (!options.p4RuntimeFile.isNullOrEmpty()) {
+        files.push_back(options.p4RuntimeFile);
+        formats.push_back(options.p4RuntimeFormat);
+    }
+    if (!parseFileNames(options.p4RuntimeFiles, files, formats))
+        return;
+
+    if (!files.empty()) {
+        for (unsigned i = 0; i < files.size(); i++) {
+            cstring file = files.at(i);
+            P4::P4RuntimeFormat format = formats.at(i);
+            std::ostream* out = openFile(file, false);
+            if (!out) {
+                ::error("Couldn't open P4Runtime API file: %1%", file);
+                continue;
+            }
+            p4Runtime.serializeP4InfoTo(out, format);
         }
-        p4Runtime.serializeEntriesTo(out, options.p4RuntimeFormat);
+    }
+
+    // Do the same for the entries files
+    files.clear();
+    formats.clear();
+    if (!options.p4RuntimeEntriesFile.isNullOrEmpty()) {
+        files.push_back(options.p4RuntimeEntriesFile);
+        formats.push_back(options.p4RuntimeFormat);
+    }
+
+    if (!parseFileNames(options.p4RuntimeEntriesFiles, files, formats))
+        return;
+    if (!files.empty()) {
+        for (unsigned i = 0; i < files.size(); i++) {
+            cstring file = files.at(i);
+            P4::P4RuntimeFormat format = formats.at(i);
+            std::ostream* out = openFile(file, false);
+            if (!out) {
+                ::error("Couldn't open P4Runtime static entries file: %1%",
+                        options.p4RuntimeEntriesFile);
+                continue;
+            }
+            p4Runtime.serializeEntriesTo(out, format);
+        }
     }
 }
 

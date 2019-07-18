@@ -51,8 +51,8 @@ struct headers_t {
     ipv4_t                 ipv4;
 }
 
-action my_drop() {
-    mark_to_drop();
+action my_drop(inout standard_metadata_t smeta) {
+    mark_to_drop(smeta);
 }
 parser ParserImpl(packet_in packet, out headers_t hdr, inout meta_t meta, inout standard_metadata_t standard_metadata) {
     const bit<16> ETHERTYPE_IPV4 = 16w0x800;
@@ -90,10 +90,10 @@ control ingress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_
     }
     action do_resubmit(bit<32> new_ipv4_dstAddr) {
         hdr.ipv4.dstAddr = new_ipv4_dstAddr;
-        resubmit<standard_metadata_t>(standard_metadata);
+        resubmit<tuple<>>({  });
     }
     action do_clone_i2e(bit<32> l2ptr) {
-        clone3<standard_metadata_t>(CloneType.I2E, 32w5, standard_metadata);
+        clone3<tuple<>>(CloneType.I2E, 32w5, {  });
         meta.fwd.l2ptr = l2ptr;
     }
     table ipv4_da_lpm {
@@ -105,9 +105,9 @@ control ingress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_
             set_mcast_grp();
             do_resubmit();
             do_clone_i2e();
-            my_drop();
+            my_drop(standard_metadata);
         }
-        default_action = my_drop();
+        default_action = my_drop(standard_metadata);
     }
     action set_bd_dmac_intf(bit<24> bd, bit<48> dmac, bit<9> intf) {
         meta.fwd.out_bd = bd;
@@ -121,24 +121,23 @@ control ingress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_
         }
         actions = {
             set_bd_dmac_intf();
-            my_drop();
+            my_drop(standard_metadata);
         }
-        default_action = my_drop();
+        default_action = my_drop(standard_metadata);
     }
     apply {
         if (standard_metadata.instance_type == 32w6) {
             c_fill_ipv4_address.apply(hdr.ipv4.srcAddr, 8w10, 8w252, 8w129, 8w2);
             meta.fwd.l2ptr = 32w0xe50b;
+        } else if (standard_metadata.instance_type == 32w4) {
+            c_fill_ipv4_address.apply(hdr.ipv4.srcAddr, 8w10, 8w199, 8w86, 8w99);
+            meta.fwd.l2ptr = 32w0xec1c;
+        } else {
+            ipv4_da_lpm.apply();
         }
-        else 
-            if (standard_metadata.instance_type == 32w4) {
-                c_fill_ipv4_address.apply(hdr.ipv4.srcAddr, 8w10, 8w199, 8w86, 8w99);
-                meta.fwd.l2ptr = 32w0xec1c;
-            }
-            else 
-                ipv4_da_lpm.apply();
-        if (meta.fwd.l2ptr != 32w0) 
+        if (meta.fwd.l2ptr != 32w0) {
             mac_da.apply();
+        }
     }
 }
 
@@ -162,11 +161,11 @@ control egress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_t
     }
     action do_recirculate(bit<32> new_ipv4_dstAddr) {
         hdr.ipv4.dstAddr = new_ipv4_dstAddr;
-        recirculate<standard_metadata_t>(standard_metadata);
+        recirculate<tuple<>>({  });
     }
     action do_clone_e2e(bit<48> smac) {
         hdr.ethernet.srcAddr = smac;
-        clone3<standard_metadata_t>(CloneType.E2E, 32w11, standard_metadata);
+        clone3<tuple<>>(CloneType.E2E, 32w11, {  });
     }
     table send_frame {
         key = {
@@ -176,27 +175,25 @@ control egress(inout headers_t hdr, inout meta_t meta, inout standard_metadata_t
             rewrite_mac();
             do_recirculate();
             do_clone_e2e();
-            my_drop();
+            my_drop(standard_metadata);
         }
-        default_action = my_drop();
+        default_action = my_drop(standard_metadata);
     }
     apply {
         if (standard_metadata.instance_type == 32w1) {
             hdr.switch_to_cpu.setValid();
             hdr.switch_to_cpu.word0 = 32w0x12e012e;
             hdr.switch_to_cpu.word1 = 32w0x5a5a5a5a;
+        } else if (standard_metadata.instance_type == 32w2) {
+            hdr.switch_to_cpu.setValid();
+            hdr.switch_to_cpu.word0 = 32w0xe2e0e2e;
+            hdr.switch_to_cpu.word1 = 32w0x5a5a5a5a;
+        } else {
+            if (standard_metadata.instance_type == 32w5) {
+                get_multicast_copy_out_bd.apply();
+            }
+            send_frame.apply();
         }
-        else 
-            if (standard_metadata.instance_type == 32w2) {
-                hdr.switch_to_cpu.setValid();
-                hdr.switch_to_cpu.word0 = 32w0xe2e0e2e;
-                hdr.switch_to_cpu.word1 = 32w0x5a5a5a5a;
-            }
-            else {
-                if (standard_metadata.instance_type == 32w5) 
-                    get_multicast_copy_out_bd.apply();
-                send_frame.apply();
-            }
     }
 }
 

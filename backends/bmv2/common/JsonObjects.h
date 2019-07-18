@@ -38,7 +38,9 @@ class JsonObjects {
     unsigned add_header(const cstring& type, const cstring& name);
     unsigned add_metadata(const cstring& type, const cstring& name);
     void add_header_stack(const cstring& type, const cstring& name,
-                          const unsigned size, std::vector<unsigned>& header_ids);
+                          const unsigned size, const std::vector<unsigned>& header_ids);
+    void add_header_union_stack(const cstring& type, const cstring& name,
+                                const unsigned size, const std::vector<unsigned>& header_ids);
     void add_error(const cstring& name, const unsigned type);
     void add_enum(const cstring& enum_name, const cstring& entry_name,
                   const unsigned entry_value);
@@ -52,12 +54,14 @@ class JsonObjects {
     void add_pipeline();
     void add_extern_attribute(const cstring& name, const cstring& type,
                               const cstring& value, Util::JsonArray* attributes);
-    void add_extern(const cstring& name, const cstring& type, Util::JsonArray*& attributes);
+    void add_extern(const cstring& name, const cstring& type, Util::JsonArray* attributes);
     JsonObjects();
     Util::JsonArray* insert_array_field(Util::JsonObject* parent, cstring name);
     Util::JsonArray* append_array(Util::JsonArray* parent);
     Util::JsonArray* create_parameters(Util::JsonObject* object);
     Util::JsonObject* create_primitive(Util::JsonArray* parent, cstring name);
+    // Given a field list id returns the array of values called "elements"
+    Util::JsonArray* get_field_list_contents(unsigned id) const;
 
     std::map<unsigned, Util::JsonObject*> map_parser;
     std::map<unsigned, Util::JsonObject*> map_parser_state;
