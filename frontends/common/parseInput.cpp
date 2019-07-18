@@ -48,7 +48,7 @@ parseV1Program(Input& stream, const char* sourceFile, unsigned sourceLine,
     // Convert to P4-16.
     if (Log::verbose())
         std::cerr << "Converting to P4-16" << std::endl;
-    v1 = v1->apply(converter);
+    //v1 = v1->apply(converter);
     if (::errorCount() > 0 || v1 == nullptr)
         return nullptr;
     BUG_CHECK(v1->is<IR::P4Program>(), "Conversion returned %1%", v1);

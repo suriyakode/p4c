@@ -23,15 +23,35 @@ limitations under the License.
 #include "lib/nullstream.h"
 #include "frontends/common/applyOptionsPragmas.h"
 #include "frontends/common/parseInput.h"
+#include "frontends/p4/localizeActions.h"
 #include "frontends/p4/evaluator/evaluator.h"
 #include "frontends/p4/frontend.h"
 #include "frontends/p4/toP4/toP4.h"
+#include "frontends/p4/typeChecking/typeChecker.h"
+#include "frontends/p4/validateParsedProgram.h"
+#include "frontends/p4/createBuiltins.h"
+#include "frontends/common/constantFolding.h"
+#include "frontends/p4/directCalls.h"
+#include "frontends/common/resolveReferences/resolveReferences.h"
+#include "frontends/p4/deprecated.h"
+#include "frontends/p4/checkNamedArgs.h"
+#include "frontends/p4/typeChecking/bindVariables.h"
+#include "frontends/p4/structInitializers.h"
+#include "frontends/p4/tableKeyNames.h"
+#include "frontends/p4/defaultArguments.h"
+
+
 
 #include "graphs.h"
 #include "controls.h"
 #include "parsers.h"
 #include "pathEncoding.h"
 #include "injectEncoding.h"
+#include "encodeActions.h"
+
+#include <fstream>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 
 namespace graphs {
 
@@ -63,8 +83,39 @@ MidEnd::MidEnd(CompilerOptions& options) {
 
 class BallLarus : public PassManager {
  public:
-    BallLarus(graphs::PathEncoding *pencoding, graphs::InjectEncoding* inject, P4::ToP4* top4) {
-        addPasses({pencoding, inject, top4});
+    P4::ParseAnnotations parseAnnotations;
+    BallLarus(P4::ReferenceMap *refMap, P4::TypeMap *typeMap, json j) {
+        refMap->setIsV1(false);
+
+        addPasses({
+        /*    &parseAnnotations,
+        // Simple checks on parsed program
+        new P4::ValidateParsedProgram(),
+        // Synthesize some built-in constructs
+        new P4::CreateBuiltins(),
+        new P4::ResolveReferences(refMap, true),  // check shadowing
+        // First pass of constant folding, before types are known --
+        // may be needed to compute types.
+        new P4::ConstantFolding(refMap, nullptr),
+        // Desugars direct parser and control applications
+        // into instantiations followed by application
+        new P4::InstantiateDirectCalls(refMap),
+        // Type checking and type inference.  Also inserts
+        // explicit casts where implicit casts exist.
+        new P4::ResolveReferences(refMap),  // check shadowing
+        new P4::Deprecated(refMap),
+        new P4::CheckNamedArgs(),
+        new P4::TypeInference(refMap, typeMap, false),  // insert casts
+        new P4::DefaultArguments(refMap, typeMap),  // add default argument values to parameters
+        new P4::BindTypeVariables(refMap, typeMap),
+        new P4::StructInitializers(refMap, typeMap),
+        new P4::TableKeyNames(refMap, typeMap),
+            new P4::ResolveReferences(refMap),
+            new P4::LocalizeAllActions(refMap),*/
+        //    new P4::TypeInference(refMap, typeMap),
+            new graphs::EncodeActions(refMap, typeMap, j),
+            new P4::ToP4(openFile("prime.p4", true), false, nullptr)
+        });
     }
 };
 
@@ -90,7 +141,7 @@ int main(int argc, char *const argv[]) {
     AutoCompileContext autoGraphsContext(new ::graphs::GraphsContext);
     auto& options = ::graphs::GraphsContext::get().options();
     options.langVersion = CompilerOptions::FrontendVersion::P4_16;
-    options.compilerVersion = "0.0.5";
+    options.compilerVersion = "6";
 
     if (options.process(argc, argv) != nullptr)
         options.setInputFile();
@@ -100,7 +151,7 @@ int main(int argc, char *const argv[]) {
     auto hook = options.getDebugHook();
 
     auto program = P4::parseP4File(options);
-    if (program == nullptr || ::errorCount() > 0)
+    /*if (program == nullptr || ::errorCount() > 0)
         return 1;
 
     try {
@@ -115,8 +166,8 @@ int main(int argc, char *const argv[]) {
         return 1;
     }
     if (program == nullptr || ::errorCount() > 0)
-        return 1;
-
+        return 1;*/
+/*
     graphs::MidEnd midEnd(options);
     midEnd.addDebugHook(hook);
     const IR::ToplevelBlock *top = nullptr;
@@ -131,20 +182,24 @@ int main(int argc, char *const argv[]) {
     if (::errorCount() > 0)
         return 1;
 
-    LOG2("Generating graphs under " << options.graphsDir);
+    LOG2("Generating graphs under " << options.graphsDir);*/
     LOG2("Generating control graphs");
+    std::ifstream table_info("variables.json");
+    json j;
+    table_info >> j; 
 
-    auto top4 = new P4::ToP4(openFile("prime.p4", true), false, nullptr);
-    auto cgen = new graphs::ControlGraphs(&midEnd.refMap, &midEnd.typeMap, options.graphsDir);
-    auto pencoding = new graphs::PathEncoding(&midEnd.refMap, &midEnd.typeMap);
-    auto inject = new graphs::InjectEncoding(&midEnd.refMap, &midEnd.typeMap);
-    auto BL = graphs::BallLarus(pencoding, inject, top4);
+    P4::ReferenceMap refmap;
+    P4::TypeMap typemap;
+    //auto cgen = new graphs::ControlGraphs(&midEnd.refMap, &midEnd.typeMap, options.graphsDir);
+    //auto pencoding = new graphs::PathEncoding(&midEnd.refMap, &midEnd.typeMap);
+    //auto inject = new graphs::InjectEncoding(&midEnd.refMap, &midEnd.typeMap);
+    auto BL = graphs::BallLarus(&refmap, &typemap, j);
 
-    top->getProgram()->apply(BL);
+    program->apply(BL);
 
-    LOG2("Generating parser graphs");
-    graphs::ParserGraphs pgg(&midEnd.refMap, &midEnd.typeMap, options.graphsDir);
-    program->apply(pgg);
+    //LOG2("Generating parser graphs");
+    //graphs::ParserGraphs pgg(&midEnd.refMap, &midEnd.typeMap, options.graphsDir);
+    //program->apply(pgg);
 
     return ::errorCount() > 0;
 }

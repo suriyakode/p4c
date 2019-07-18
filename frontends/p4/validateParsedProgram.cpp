@@ -60,7 +60,7 @@ void ValidateParsedProgram::postorder(const IR::Type_Bits* type) {
     if (type->expression)
         // cannot validate yet
         return;
-    if (type->size <= 0)
+    if (type->size < 0)
         ::error("%1%: Illegal type size", type);
     if (type->size == 1 && type->isSigned)
         ::error("%1%: Signed types cannot be 1-bit wide", type);

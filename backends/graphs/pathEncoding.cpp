@@ -142,7 +142,7 @@ void PathEncoding::postorder(IR::P4Table *table) {
 
 void PathEncoding::postorder(IR::Node *node) {
     std::vector<const IR::Node *> children;
-    node->get_children(children);
+    //node->get_children(children);
     node->numPaths = 0;
     for (unsigned int i = 0; i < children.size(); i++) {
         if (children[i] != nullptr) {

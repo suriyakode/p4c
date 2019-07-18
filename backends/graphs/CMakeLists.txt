@@ -22,6 +22,7 @@ set (GRAPHS_SRCS
   p4c-graphs.cpp
   pathEncoding.cpp
   injectEncoding.cpp
+  encodeActions.cpp
   )
 
 set (GRAPHS_HDRS
@@ -30,12 +31,18 @@ set (GRAPHS_HDRS
   parsers.h
   pathEncoding.h
   injectEncoding.h
+  encodeActions.h
   )
 
 add_cpplint_files(${CMAKE_CURRENT_SOURCE_DIR} "${GRAPHS_SRCS};${GRAPHS_HDRS}")
 
 build_unified(GRAPHS_SRCS ALL)
 add_executable(p4c-graphs ${GRAPHS_SRCS} ${EXTENSION_P4_14_CONV_SOURCES})
+
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+add_subdirectory(nlohmann_json)
+target_link_libraries(p4c-graphs nlohmann_json::nlohmann_json)
+
 target_link_libraries (p4c-graphs ${P4C_LIBRARIES} ${P4C_LIB_DEPS})
 add_dependencies(p4c-graphs genIR frontend)
 
